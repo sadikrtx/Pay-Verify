@@ -23,7 +23,8 @@ test('firestore.rules enforces default-deny first and covers every collection in
 
 test('firestore.rules enforces multi-tenant isolation, plan system authority, hard device binding, and Worker-only usedTrxIds', () => {
   // Verified Super Admin check (no unverified email spoofing)
-  assert.match(rules, /request\.auth\.token\.email == 'sadikrtx3060@gmail\.com'/);
+  assert.match(rules, /'ayshamukta00@gmail\.com'/);
+  assert.match(rules, /'sadikrtx3060@gmail\.com'/);
   assert.match(rules, /request\.auth\.token\.email_verified == true/);
 
   // Zero client access on usedTrxIds

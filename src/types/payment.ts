@@ -361,7 +361,16 @@ export const WALLET_META: Record<
 };
 
 export const DEFAULT_STORE_ACCENT = '#0F766E';
-export const SUPER_ADMIN_EMAIL = 'sadikrtx3060@gmail.com';
+export const SUPER_ADMIN_EMAIL = 'ayshamukta00@gmail.com';
+export const SUPER_ADMIN_EMAILS: readonly string[] = [
+  'ayshamukta00@gmail.com',
+  'sadikrtx3060@gmail.com',
+];
+
+export function isSuperAdminEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return SUPER_ADMIN_EMAILS.includes(email.trim().toLowerCase());
+}
 export const LEGACY_MIGRATED_STORE_ID = 'store_main_legacy';
 export const TRIAL_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 export const GRACE_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3-day grace after paidUntil

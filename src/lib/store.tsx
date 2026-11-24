@@ -85,6 +85,7 @@ import {
 } from './storeMappers';
 import {
   DEFAULT_STORE_ACCENT,
+  isSuperAdminEmail,
   LEGACY_MIGRATED_STORE_ID,
   SEEDED_PLAN_IDS,
   SUPER_ADMIN_EMAIL,
@@ -512,7 +513,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const emailLower = (fbUser.email || '').trim().toLowerCase();
       const displayName = (fbUser.displayName || emailLower.split('@')[0] || 'মার্চেন্ট').slice(0, 80);
       const isBootstrappedSuperAdmin =
-        emailLower === SUPER_ADMIN_EMAIL && fbUser.emailVerified === true;
+        isSuperAdminEmail(emailLower) && fbUser.emailVerified === true;
 
       // 1. Ensure payAccounts/{uid} exists
       const accountRef = doc(db, 'payAccounts', uid);

@@ -29,10 +29,10 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Designated verified Super Admin (zero DB reads; safe in allow list & single-doc ops)
+    // Designated verified Super Admins (zero DB reads; safe in allow list & single-doc ops)
     function isSuperAdmin() {
       return isSignedIn()
-        && request.auth.token.email == 'sadikrtx3060@gmail.com'
+        && request.auth.token.email in ['ayshamukta00@gmail.com', 'sadikrtx3060@gmail.com']
         && request.auth.token.email_verified == true;
     }
 
