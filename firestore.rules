@@ -78,19 +78,31 @@ service cloud.firestore {
         && m.upay is bool;
     }
 
+    function isValidMethodAccountEntry(item) {
+      return item is map
+        && item.keys().hasAll(['number', 'type', 'active'])
+        && item.keys().hasOnly(['number', 'type', 'actionType', 'customInstruction', 'active'])
+        && item.number is string && item.number.size() >= 1 && item.number.size() <= 16
+        && item.type in ['personal', 'agent']
+        && item.active is bool
+        && (!item.keys().hasAny(['actionType']) || item.actionType in ['send_money', 'cash_in', 'cash_out', 'payment'])
+        && (!item.keys().hasAny(['customInstruction']) || (item.customInstruction is string && item.customInstruction.size() <= 500));
+    }
+
     function isBoundedMethodAccountList(arr) {
       return arr is list
         && arr.size() <= 10
-        && (arr.size() == 0 || arr[0] is map);
+        && (arr.size() == 0 || isValidMethodAccountEntry(arr[0]));
     }
 
     function isValidPaymentAccountsMap(m) {
       return m is map
         && m.keys().hasAll(['bkash', 'nagad', 'rocket'])
-        && m.keys().hasOnly(['bkash', 'nagad', 'rocket'])
+        && m.keys().hasOnly(['bkash', 'nagad', 'rocket', 'upay'])
         && isBoundedMethodAccountList(m.bkash)
         && isBoundedMethodAccountList(m.nagad)
-        && isBoundedMethodAccountList(m.rocket);
+        && isBoundedMethodAccountList(m.rocket)
+        && (!m.keys().hasAny(['upay']) || isBoundedMethodAccountList(m.upay));
     }
 
     function isBoundedUidList(arr) {
@@ -134,11 +146,54 @@ service cloud.firestore {
 
     // ─── Validation Blueprints (Anti-Update-Gap) ────────────────────────
 
+    function isValidLandingConfig(l) {
+      return l is map
+        && l.keys().hasAll([
+          'announcement', 'hero', 'howItWorksSteps', 'benefits', 'faqs',
+          'finalCtaHeadline', 'finalCtaButtonText'
+        ])
+        && l.keys().hasOnly([
+          'announcement', 'hero', 'howItWorksSteps', 'benefits', 'faqs',
+          'finalCtaHeadline', 'finalCtaButtonText'
+        ])
+        && l.announcement is map
+        && l.announcement.keys().hasAll(['enabled', 'text', 'offerEndsAtMs'])
+        && l.announcement.keys().hasOnly(['enabled', 'text', 'offerEndsAtMs'])
+        && l.announcement.enabled is bool
+        && l.announcement.text is string && l.announcement.text.size() <= 200
+        && (l.announcement.offerEndsAtMs == null || (l.announcement.offerEndsAtMs is int && l.announcement.offerEndsAtMs > 0))
+        && l.hero is map
+        && l.hero.keys().hasAll([
+          'headline', 'supportingLine', 'ctaText', 'mediaType',
+          'imageUrl', 'imageDataUrl', 'videoUrl', 'videoPosterUrl', 'videoPosterDataUrl'
+        ])
+        && l.hero.keys().hasOnly([
+          'headline', 'supportingLine', 'ctaText', 'mediaType',
+          'imageUrl', 'imageDataUrl', 'videoUrl', 'videoPosterUrl', 'videoPosterDataUrl'
+        ])
+        && l.hero.headline is string && l.hero.headline.size() >= 1 && l.hero.headline.size() <= 140
+        && l.hero.supportingLine is string && l.hero.supportingLine.size() <= 260
+        && l.hero.ctaText is string && l.hero.ctaText.size() >= 1 && l.hero.ctaText.size() <= 60
+        && l.hero.mediaType in ['three_step', 'image', 'video']
+        && l.hero.imageUrl is string && l.hero.imageUrl.size() <= 512
+        && l.hero.imageDataUrl is string && l.hero.imageDataUrl.size() <= 200000
+        && l.hero.videoUrl is string && l.hero.videoUrl.size() <= 512
+        && l.hero.videoPosterUrl is string && l.hero.videoPosterUrl.size() <= 512
+        && l.hero.videoPosterDataUrl is string && l.hero.videoPosterDataUrl.size() <= 200000
+        && l.howItWorksSteps is list && l.howItWorksSteps.size() == 3
+        && l.benefits is list && l.benefits.size() <= 12
+        && l.faqs is list && l.faqs.size() <= 20
+        && l.finalCtaHeadline is string && l.finalCtaHeadline.size() <= 180
+        && l.finalCtaButtonText is string && l.finalCtaButtonText.size() <= 60;
+    }
+
     function isValidPayPlatform(data) {
       return data.keys().hasAll(['workerBaseUrl', 'updatedAt'])
         && data.keys().hasOnly([
           'workerBaseUrl', 'migratedFromSettingsMain', 'migratedStoreId',
-          'trialPlanId', 'subscriptionStoreId', 'plansSeeded', 'updatedAt'
+          'trialPlanId', 'subscriptionStoreId', 'plansSeeded',
+          'brandLogoUrl', 'brandLogoDataUrl', 'supportWhatsApp', 'supportPhone',
+          'landing', 'updatedAt'
         ])
         && data.workerBaseUrl is string && data.workerBaseUrl.size() <= 256
         && (!data.keys().hasAny(['migratedFromSettingsMain']) || data.migratedFromSettingsMain is bool)
@@ -146,6 +201,11 @@ service cloud.firestore {
         && (!data.keys().hasAny(['trialPlanId']) || data.trialPlanId == null || (data.trialPlanId is string && data.trialPlanId.size() <= 128))
         && (!data.keys().hasAny(['subscriptionStoreId']) || data.subscriptionStoreId == null || (data.subscriptionStoreId is string && data.subscriptionStoreId.size() <= 128))
         && (!data.keys().hasAny(['plansSeeded']) || data.plansSeeded is bool)
+        && (!data.keys().hasAny(['brandLogoUrl']) || data.brandLogoUrl == null || (data.brandLogoUrl is string && data.brandLogoUrl.size() <= 512))
+        && (!data.keys().hasAny(['brandLogoDataUrl']) || data.brandLogoDataUrl == null || (data.brandLogoDataUrl is string && data.brandLogoDataUrl.size() <= 65000))
+        && (!data.keys().hasAny(['supportWhatsApp']) || data.supportWhatsApp == null || (data.supportWhatsApp is string && data.supportWhatsApp.size() <= 32))
+        && (!data.keys().hasAny(['supportPhone']) || data.supportPhone == null || (data.supportPhone is string && data.supportPhone.size() <= 32))
+        && (!data.keys().hasAny(['landing']) || isValidLandingConfig(data.landing))
         && data.updatedAt is timestamp;
     }
 
@@ -336,6 +396,8 @@ service cloud.firestore {
           'accountId', 'storeId', 'orderId', 'method', 'number', 'amountPaisa', 'payablePaisa',
           'status', 'trxId', 'sender', 'createdAt', 'expiresAt', 'paidAt',
           'source', 'manual', 'manualNote', 'successUrl', 'failUrl', 'memberUids', 'ownerUid',
+          'isTest', 'testType', 'testResult', 'failureReason', 'expectedAmountPaisa',
+          'receivedAmountPaisa', 'simulated', 'webhookFired',
           'subscriptionRefAccountId', 'subscriptionItemName', 'subscriptionItemType',
           'subscriptionResultingPaidUntil', 'couponCode'
         ])
@@ -346,7 +408,7 @@ service cloud.firestore {
         && data.number is string && data.number.size() <= 16
         && data.amountPaisa is int && data.amountPaisa >= 100 && data.amountPaisa <= 100000000
         && data.payablePaisa is int && data.payablePaisa >= 100 && data.payablePaisa <= 100000099
-        && data.status in ['waiting', 'paid', 'expired', 'cancelled']
+        && data.status in ['waiting', 'paid', 'expired', 'cancelled', 'failed']
         && (!data.keys().hasAny(['trxId']) || data.trxId == null || (data.trxId is string && data.trxId.size() <= 64))
         && (!data.keys().hasAny(['sender']) || data.sender == null || (data.sender is string && data.sender.size() <= 32))
         && (data.createdAt is timestamp || data.createdAt is int)
@@ -359,6 +421,16 @@ service cloud.firestore {
         && (!data.keys().hasAny(['failUrl']) || data.failUrl == null || (data.failUrl is string && data.failUrl.size() <= 512))
         && (!data.keys().hasAny(['memberUids']) || isBoundedUidList(data.memberUids))
         && (!data.keys().hasAny(['ownerUid']) || (data.ownerUid is string && data.ownerUid.size() <= 128))
+        && (!data.keys().hasAny(['isTest']) || data.isTest is bool)
+        && (!data.keys().hasAny(['testType']) || data.testType in ['real', 'simulation'])
+        && (!data.keys().hasAny(['testResult']) || data.testResult in ['pending', 'verified', 'verified_simulated', 'failed'])
+        && (!data.keys().hasAny(['failureReason']) || data.failureReason == null || (data.failureReason is string && data.failureReason.size() <= 300))
+        && (!data.keys().hasAny(['expectedAmountPaisa']) || data.expectedAmountPaisa == null || (data.expectedAmountPaisa is int && data.expectedAmountPaisa >= 0 && data.expectedAmountPaisa <= 100000099))
+        && (!data.keys().hasAny(['receivedAmountPaisa']) || data.receivedAmountPaisa == null || (data.receivedAmountPaisa is int && data.receivedAmountPaisa >= 0 && data.receivedAmountPaisa <= 100000099))
+        && (!data.keys().hasAny(['simulated']) || data.simulated is bool)
+        && (!data.keys().hasAny(['webhookFired']) || data.webhookFired is bool)
+        && (!data.keys().hasAny(['simulated']) || data.simulated == false || (data.keys().hasAny(['isTest']) && data.isTest == true))
+        && (!data.keys().hasAny(['testResult']) || data.testResult != 'verified_simulated' || (data.keys().hasAny(['isTest']) && data.isTest == true))
         && (!data.keys().hasAny(['subscriptionRefAccountId']) || data.subscriptionRefAccountId == null || (data.subscriptionRefAccountId is string && data.subscriptionRefAccountId.size() <= 128))
         && (!data.keys().hasAny(['subscriptionItemName']) || data.subscriptionItemName == null || (data.subscriptionItemName is string && data.subscriptionItemName.size() <= 120))
         && (!data.keys().hasAny(['subscriptionItemType']) || data.subscriptionItemType == null || data.subscriptionItemType in ['plan', 'addon'])
@@ -373,7 +445,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'accountId', 'storeId', 'method', 'amountPaisa', 'sender', 'trxId', 'smsTime',
-          'receivedAt', 'raw', 'matchResult', 'matched', 'dismissed', 'sessionId', 'ownerUid'
+          'receivedAt', 'raw', 'matchResult', 'matched', 'dismissed', 'sessionId', 'ownerUid', 'simulated'
         ])
         && (!data.keys().hasAny(['accountId']) || (data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128))
         && (!data.keys().hasAny(['storeId']) || data.storeId == null || (data.storeId is string && data.storeId.size() <= 128))
@@ -388,7 +460,8 @@ service cloud.firestore {
         && (!data.keys().hasAny(['matched']) || data.matched is bool)
         && (!data.keys().hasAny(['dismissed']) || data.dismissed is bool)
         && (!data.keys().hasAny(['sessionId']) || data.sessionId == null || (data.sessionId is string && data.sessionId.size() <= 128))
-        && (!data.keys().hasAny(['ownerUid']) || (data.ownerUid is string && data.ownerUid.size() <= 128));
+        && (!data.keys().hasAny(['ownerUid']) || (data.ownerUid is string && data.ownerUid.size() <= 128))
+        && (!data.keys().hasAny(['simulated']) || data.simulated is bool);
     }
 
     function isValidPayDevice(data) {
@@ -414,13 +487,22 @@ service cloud.firestore {
     // ─── Collection Rules (Strict Multi-Tenant Isolation) ───────────────
 
     match /payPlatform/{docId} {
-      allow get: if docId == 'config' && isSignedIn();
+      // Public config doc contains zero secrets (brand logo, support phone/WhatsApp, landing page content, workerBaseUrl, trialPlanId, subscriptionStoreId)
+      allow get: if docId == 'config';
       allow list: if false;
       allow create, update: if docId == 'config'
         && isValidPayPlatform(incoming())
         && isSuperAdmin()
         && incoming().updatedAt == request.time;
       allow delete: if false;
+    }
+
+    match /paySubscriptionPurchases/{purchaseId} {
+      // Contains buyer name/phone and purchase lifecycle (pending -> paid/failed/expired/cancelled).
+      // Super Admin read-only; strictly Worker-written so browsers can NEVER mark paid or mint claim tokens.
+      allow get: if isValidId(purchaseId) && isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create, update, delete: if false;
     }
 
     match /payDirectory/{emailHash} {
@@ -656,6 +738,8 @@ service cloud.firestore {
         && isValidPaySession(incoming())
         && isSignedIn()
         && incoming().status == 'waiting'
+        && (!incoming().keys().hasAny(['simulated']) || incoming().simulated == false)
+        && (!incoming().keys().hasAny(['webhookFired']) || incoming().webhookFired == false)
         && incoming().keys().hasAny(['storeId']) && isValidId(incoming().storeId)
         && exists(/databases/$(database)/documents/payStores/$(incoming().storeId))
         && (
@@ -686,7 +770,17 @@ service cloud.firestore {
                       'status', 'trxId', 'sender', 'paidAt', 'manual', 'manualNote', 'source'
                     ])) ||
                   (existing().status == 'waiting' && incoming().status == 'cancelled'
-                    && incoming().diff(existing()).affectedKeys().hasOnly(['status']))
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['status'])) ||
+                  // Test Verification (A7): simulated or test-session updates are strictly restricted to existing isTest == true docs
+                  (existing().keys().hasAny(['isTest']) && existing().isTest == true
+                    && incoming().isTest == true
+                    && (!incoming().keys().hasAny(['webhookFired']) || incoming().webhookFired == false)
+                    && existing().status == 'waiting'
+                    && incoming().status in ['paid', 'failed', 'expired']
+                    && incoming().diff(existing()).affectedKeys().hasOnly([
+                      'status', 'trxId', 'sender', 'paidAt', 'testResult', 'simulated',
+                      'failureReason', 'expectedAmountPaisa', 'receivedAmountPaisa', 'webhookFired'
+                    ]))
                 )) ||
               (storeMemberRole(get(/databases/$(database)/documents/payStores/$(existing().storeId)).data) == 'manager'
                 && existing().status == 'waiting' && incoming().status == 'paid'
@@ -709,7 +803,19 @@ service cloud.firestore {
         (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid) ||
         (isSuperAdmin() && !resource.data.keys().hasAny(['accountId']))
       );
-      allow create: if false; // Written exclusively by Cloudflare Worker
+      // Real payment SMS writes remain strictly Worker-only; simulated test SMS allowed ONLY for owner against existing isTest == true session
+      allow create: if isValidId(smsId)
+        && isValidPaySms(incoming())
+        && isSignedIn()
+        && incoming().accountId == request.auth.uid
+        && incoming().keys().hasAny(['simulated'])
+        && incoming().simulated == true
+        && incoming().trxId.matches('^SIM[A-Z0-9_\\-]+$')
+        && incoming().keys().hasAny(['sessionId'])
+        && isValidId(incoming().sessionId)
+        && exists(/databases/$(database)/documents/paySessions/$(incoming().sessionId))
+        && get(/databases/$(database)/documents/paySessions/$(incoming().sessionId)).data.isTest == true
+        && get(/databases/$(database)/documents/paySessions/$(incoming().sessionId)).data.accountId == request.auth.uid;
       allow update: if isValidId(smsId)
         && isValidPaySms(incoming())
         && isSignedIn()

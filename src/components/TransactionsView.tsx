@@ -10,7 +10,7 @@ import {
 import { usePayVerify } from '../lib/store';
 import { formatBanglaDateTime, formatBdt } from '../lib/money';
 import type { PaySmsDoc, SmsMatchResult } from '../types/payment';
-import { SmsMatchChip, WalletMethodChip } from './WalletBadge';
+import { SmsMatchChip, TestModeBadge, WalletMethodChip } from './WalletBadge';
 
 type SmsFilter = 'all' | SmsMatchResult;
 
@@ -152,8 +152,9 @@ export const TransactionsView: React.FC = () => {
                           {formatBanglaDateTime(sms.receivedAtMs)}
                         </td>
                         <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <SmsMatchChip result={sms.matchResult} />
+                            {sms.simulated && <TestModeBadge label="TEST · সিমুলেশন" />}
                             {sms.dismissed && (
                               <span className="text-[11px] text-slate-400">(বাদ দেওয়া)</span>
                             )}

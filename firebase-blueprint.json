@@ -2,7 +2,7 @@
   "entities": {
     "PayPlatformConfig": {
       "title": "PayPlatformConfig",
-      "description": "Platform-wide configuration edited only by the Super Admin (Worker URL, legacy migration state, default trialPlanId, designated subscriptionStoreId, and plan seeding state).",
+      "description": "Platform-wide public configuration (zero secrets) edited only by the Super Admin: Worker URL, trialPlanId, subscriptionStoreId, brand logo, support WhatsApp/phone, and editable landing page advertisement content.",
       "type": "object",
       "properties": {
         "workerBaseUrl": { "type": "string", "maxLength": 256 },
@@ -11,9 +11,39 @@
         "trialPlanId": { "type": "string", "maxLength": 128 },
         "subscriptionStoreId": { "type": "string", "maxLength": 128 },
         "plansSeeded": { "type": "boolean" },
+        "brandLogoUrl": { "type": "string", "maxLength": 512 },
+        "brandLogoDataUrl": { "type": "string", "maxLength": 65000 },
+        "supportWhatsApp": { "type": "string", "maxLength": 32 },
+        "supportPhone": { "type": "string", "maxLength": 32 },
+        "landing": { "type": "object" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["workerBaseUrl", "updatedAt"]
+    },
+    "PaySubscriptionPurchase": {
+      "title": "PaySubscriptionPurchase",
+      "description": "Worker-managed public funnel subscription purchase record (pending -> paid/failed/expired/cancelled) with single-use server-issued claim token tracking. Read-only for Super Admin; strictly Worker-written.",
+      "type": "object",
+      "properties": {
+        "reference": { "type": "string", "maxLength": 64 },
+        "planId": { "type": "string", "maxLength": 128 },
+        "planName": { "type": "string", "maxLength": 80 },
+        "billingCycle": { "type": "string", "enum": ["monthly", "yearly"] },
+        "amountPaisa": { "type": "integer" },
+        "method": { "type": "string", "enum": ["bkash", "nagad", "rocket", "upay"] },
+        "buyerName": { "type": "string", "maxLength": 80 },
+        "buyerPhone": { "type": "string", "maxLength": 20 },
+        "sessionId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["pending", "paid", "failed", "expired", "cancelled"] },
+        "trxId": { "type": "string", "maxLength": 64 },
+        "claimedAccountId": { "type": "string", "maxLength": 128 },
+        "claimedEmail": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "paidAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "claimedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reference", "planId", "planName", "billingCycle", "amountPaisa", "method", "buyerName", "buyerPhone", "status", "createdAt"]
     },
     "PayDirectoryEntry": {
       "title": "PayDirectoryEntry",
@@ -147,7 +177,7 @@
     },
     "PayStore": {
       "title": "PayStore",
-      "description": "Tenant store with wallet numbers, multi-number Personal/Agent payment accounts, Bangla/English branding, uploaded or linked logo, webhook config, store key hash, and shared memberRoles.",
+      "description": "Tenant store with wallet numbers, multi-number Personal/Agent payment accounts with per-number actionType (send_money, cash_in, cash_out, payment) and optional customInstruction, Bangla/English branding, uploaded or linked logo, webhook config, store key hash, and shared memberRoles.",
       "type": "object",
       "properties": {
         "accountId": { "type": "string", "maxLength": 128 },
@@ -210,7 +240,7 @@
         "number": { "type": "string", "maxLength": 16 },
         "amountPaisa": { "type": "integer" },
         "payablePaisa": { "type": "integer" },
-        "status": { "type": "string", "enum": ["waiting", "paid", "expired", "cancelled"] },
+        "status": { "type": "string", "enum": ["waiting", "paid", "expired", "cancelled", "failed"] },
         "trxId": { "type": "string", "maxLength": 64 },
         "sender": { "type": "string", "maxLength": 32 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -222,6 +252,14 @@
         "successUrl": { "type": "string", "maxLength": 512 },
         "failUrl": { "type": "string", "maxLength": 512 },
         "memberUids": { "type": "array" },
+        "isTest": { "type": "boolean" },
+        "testType": { "type": "string", "enum": ["real", "simulation"] },
+        "testResult": { "type": "string", "enum": ["pending", "verified", "verified_simulated", "failed"] },
+        "failureReason": { "type": "string", "maxLength": 300 },
+        "expectedAmountPaisa": { "type": "integer" },
+        "receivedAmountPaisa": { "type": "integer" },
+        "simulated": { "type": "boolean" },
+        "webhookFired": { "type": "boolean" },
         "subscriptionRefAccountId": { "type": "string", "maxLength": 128 },
         "subscriptionItemName": { "type": "string", "maxLength": 120 },
         "subscriptionItemType": { "type": "string", "enum": ["plan", "addon"] },
@@ -232,7 +270,7 @@
     },
     "PaySms": {
       "title": "PaySms",
-      "description": "Incoming payment SMS ingested by Cloudflare Worker, scoped to accountId.",
+      "description": "Incoming payment SMS ingested by Cloudflare Worker, scoped to accountId (plus owner-authenticated simulated test SMS bound to an existing isTest session).",
       "type": "object",
       "properties": {
         "accountId": { "type": "string", "maxLength": 128 },
@@ -247,7 +285,8 @@
         "matchResult": { "type": "string", "enum": ["matched", "unmatched", "duplicate_trxid", "late"] },
         "matched": { "type": "boolean" },
         "dismissed": { "type": "boolean" },
-        "sessionId": { "type": "string", "maxLength": 128 }
+        "sessionId": { "type": "string", "maxLength": 128 },
+        "simulated": { "type": "boolean" }
       },
       "required": ["method", "amountPaisa", "sender", "trxId", "smsTime", "receivedAt", "raw", "matchResult"]
     },
@@ -298,7 +337,11 @@
   "firestore": {
     "/payPlatform/{docId}": {
       "schema": { "$ref": "#/entities/PayPlatformConfig" },
-      "description": "Platform-wide configuration (docId = config); readable by signed-in users, writable only by Super Admin."
+      "description": "Platform-wide public config (docId = config, zero secrets); exact get readable publicly for landing/funnel, list forbidden, writable strictly by Super Admin."
+    },
+    "/paySubscriptionPurchases/{purchaseId}": {
+      "schema": { "$ref": "#/entities/PaySubscriptionPurchase" },
+      "description": "Public selling funnel subscription purchases; readable only by Super Admin; zero client writes (Worker-authoritative only so browser can never mark paid or mint claim tokens)."
     },
     "/payDirectory/{emailHash}": {
       "schema": { "$ref": "#/entities/PayDirectoryEntry" },

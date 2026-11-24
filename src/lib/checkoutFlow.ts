@@ -1,20 +1,25 @@
 import { normalizeBdPhone } from './money';
 import { sanitizeRedirectUrl } from './platformLogic';
-import type {
-  CheckoutWalletMethod,
-  MethodNumberEntry,
-  NumberAccountType,
-  PaymentAccountsMap,
-  PayStoreDoc,
-  WalletEnabledMap,
-  WalletNumbersMap,
-  WorkerSessionStatusResponse,
+import {
+  WALLET_META,
+  WALLET_METHODS,
+  type MethodNumberEntry,
+  type NormalizedPaymentAccountsMap,
+  type NumberAccountType,
+  type PaymentActionType,
+  type PaymentAccountsMap,
+  type PayStoreDoc,
+  type WalletEnabledMap,
+  type WalletMethod,
+  type WalletNumbersMap,
+  type WorkerSessionStatusResponse,
 } from '../types/payment';
 
-export const CHECKOUT_METHODS: CheckoutWalletMethod[] = ['bkash', 'nagad', 'rocket'];
+export const CHECKOUT_METHODS: WalletMethod[] = WALLET_METHODS;
+const ALL_SESSION_METHODS: WalletMethod[] = WALLET_METHODS;
 
 export interface CheckoutMethodBrand {
-  id: CheckoutWalletMethod;
+  id: WalletMethod;
   name: string;
   nameBn: string;
   primaryHex: string;
@@ -24,7 +29,7 @@ export interface CheckoutMethodBrand {
   stepsBn: (accountType: NumberAccountType, formattedAmount: string) => string[];
 }
 
-export const CHECKOUT_METHOD_BRANDS: Record<CheckoutWalletMethod, CheckoutMethodBrand> = {
+export const CHECKOUT_METHOD_BRANDS: Record<WalletMethod, CheckoutMethodBrand> = {
   bkash: {
     id: 'bkash',
     name: 'bKash',
@@ -76,12 +81,157 @@ export const CHECKOUT_METHOD_BRANDS: Record<CheckoutWalletMethod, CheckoutMethod
       'পেমেন্ট সম্পন্ন হলে প্রাপ্ত Transaction ID নিচে লিখে ভেরিফাই করুন।',
     ],
   },
+  upay: {
+    id: 'upay',
+    name: 'Upay',
+    nameBn: 'উপায়',
+    primaryHex: '#005BAC',
+    darkHex: '#004280',
+    surfaceTint: '#EFF6FF',
+    borderTint: '#BFDBFE',
+    stepsBn: (accountType, formattedAmount) => [
+      'আপনার ফোনে Upay অ্যাপ খুলুন এবং পিন দিয়ে লগইন করুন।',
+      accountType === 'agent'
+        ? 'হোম স্ক্রিন থেকে "Cash Out" (ক্যাশ আউট) অপশন বেছে নিন।'
+        : 'হোম স্ক্রিন থেকে "Send Money" (সেন্ড মানি) অপশন বেছে নিন।',
+      `উপরে দেখানো নম্বরটি দিন এবং ঠিক ${formattedAmount} পাঠিয়ে নিশ্চিত করুন।`,
+      'পেমেন্ট সম্পন্ন হলে প্রাপ্ত Transaction ID নিচে লিখে ভেরিফাই করুন।',
+    ],
+  },
 };
 
+export const PAYMENT_ACTION_TYPES: readonly PaymentActionType[] = [
+  'send_money',
+  'cash_in',
+  'cash_out',
+  'payment',
+];
+
+export const PAYMENT_ACTION_LABELS_BN: Record<PaymentActionType, string> = {
+  send_money: 'সেন্ড মানি',
+  cash_in: 'ক্যাশ ইন',
+  cash_out: 'ক্যাশ আউট',
+  payment: 'পেমেন্ট',
+};
+
+export function defaultActionForAccountType(type: NumberAccountType): PaymentActionType {
+  return type === 'agent' ? 'cash_out' : 'send_money';
+}
+
+export function normalizePaymentActionType(
+  rawAction: unknown,
+  accountType: NumberAccountType
+): PaymentActionType {
+  if (
+    rawAction === 'send_money' ||
+    rawAction === 'cash_in' ||
+    rawAction === 'cash_out' ||
+    rawAction === 'payment'
+  ) {
+    return rawAction;
+  }
+  return defaultActionForAccountType(accountType);
+}
+
+export function sanitizeCustomInstruction(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/\r\n/g, '\n').trim().slice(0, 500);
+}
+
+export function parseCustomInstructionLines(raw: string | undefined): string[] {
+  const cleaned = sanitizeCustomInstruction(raw);
+  if (!cleaned) return [];
+  return cleaned
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export function buildActionHeadlineBn(
+  actionType: PaymentActionType,
+  formattedAmount: string
+): string {
+  switch (actionType) {
+    case 'cash_in':
+      return `এই নম্বরে ${formattedAmount} ক্যাশ ইন করুন`;
+    case 'cash_out':
+      return `এই নম্বরে ${formattedAmount} ক্যাশ আউট করুন`;
+    case 'payment':
+      return `এই নম্বরে ${formattedAmount} পেমেন্ট করুন`;
+    case 'send_money':
+    default:
+      return `এই নম্বরে ${formattedAmount} সেন্ড মানি করুন`;
+  }
+}
+
+export function buildActionStepsBn(
+  method: WalletMethod,
+  actionType: PaymentActionType,
+  formattedAmount: string,
+  receiverNumber?: string
+): string[] {
+  const brandName = CHECKOUT_METHOD_BRANDS[method]?.name || WALLET_META[method].name;
+  const dialCode = WALLET_META[method].dialCode;
+  const numRef = receiverNumber && receiverNumber.trim() ? receiverNumber.trim() : 'উপরের নম্বর';
+
+  switch (actionType) {
+    case 'cash_in':
+      return [
+        `কাছাকাছি যেকোনো ${brandName} এজেন্ট বা দোকানে যান।`,
+        `এজেন্টকে ${numRef} নম্বরে ঠিক ${formattedAmount} "Cash In" (ক্যাশ ইন) করতে বলুন।`,
+        `টাকা পরিশোধের পর কনফার্মেশন SMS থেকে Transaction ID নিয়ে নিচে ভেরিফাই করুন (প্রয়োজনে ${dialCode} ডায়াল করে দেখুন)।`,
+      ];
+    case 'cash_out':
+      return [
+        `আপনার ফোনে ${brandName} অ্যাপ খুলুন অথবা ${dialCode} ডায়াল করুন।`,
+        `মেনু থেকে "Cash Out" (ক্যাশ আউট) অপশন বেছে নিন।`,
+        `এজেন্ট নম্বরে ${numRef} এবং পরিমাণ ঠিক ${formattedAmount} লিখে পিন দিয়ে নিশ্চিত করুন।`,
+        `ক্যাশ আউট সফল হলে কনফার্মেশন SMS-এর Transaction ID নিচে লিখে ভেরিফাই করুন।`,
+      ];
+    case 'payment':
+      return [
+        `আপনার ফোনে ${brandName} অ্যাপ খুলুন অথবা ${dialCode} ডায়াল করুন।`,
+        `মেনু থেকে "Payment" (পেমেন্ট) অপশন বেছে নিন।`,
+        `মার্চেন্ট নম্বরে ${numRef} এবং পরিমাণ ঠিক ${formattedAmount} লিখে পিন দিয়ে কনফার্ম করুন।`,
+        `পেমেন্ট সম্পন্ন হলে প্রাপ্ত Transaction ID নিচে লিখে ভেরিফাই করুন।`,
+      ];
+    case 'send_money':
+    default:
+      return [
+        `আপনার ফোনে ${brandName} অ্যাপ খুলুন অথবা ${dialCode} ডায়াল করুন।`,
+        `মেনু থেকে "Send Money" (সেন্ড মানি) অপশন বেছে নিন।`,
+        `প্রাপক নম্বরে ${numRef} এবং পরিমাণ ঠিক ${formattedAmount} লিখে পিন দিয়ে পাঠান।`,
+        `টাকা পাঠানো হলে কনফার্মেশন SMS বা অ্যাপ থেকে Transaction ID নিয়ে নিচে ভেরিফাই করুন।`,
+      ];
+  }
+}
+
+export function buildTrxIdHintBn(actionType: PaymentActionType): string {
+  switch (actionType) {
+    case 'cash_in':
+      return 'এজেন্ট ক্যাশ ইন করার পর প্রাপ্ত কনফার্মেশন SMS-এ Transaction ID পাবেন।';
+    case 'cash_out':
+      return 'ক্যাশ আউটের পর প্রাপ্ত কনফার্মেশন SMS-এ Transaction ID পাবেন।';
+    case 'payment':
+    case 'send_money':
+    default:
+      return 'টাকা পাঠানোর পর কনফার্মেশন SMS এবং অ্যাপের লেনদেন ইতিহাসে Transaction ID পাবেন।';
+  }
+}
+
+export function formatCopyableAmount(paisa: number): string {
+  const safe = Number.isFinite(paisa) ? Math.max(0, Math.round(paisa)) : 0;
+  const whole = Math.floor(safe / 100);
+  const rem = safe % 100;
+  return rem === 0 ? String(whole) : `${whole}.${String(rem).padStart(2, '0')}`;
+}
+
 export interface CheckoutMethodOption {
-  method: CheckoutWalletMethod;
+  method: WalletMethod;
   number: string;
   type: NumberAccountType;
+  actionType: PaymentActionType;
+  customInstruction?: string;
   accountCount: number;
 }
 
@@ -118,11 +268,15 @@ export function formatAccountTypeHintBn(type: NumberAccountType, count = 1): str
   return base;
 }
 
+export function buildEmptyPaymentAccounts(): NormalizedPaymentAccountsMap {
+  return { bkash: [], nagad: [], rocket: [], upay: [] };
+}
+
 export function normalizePaymentAccounts(
   rawAccounts: Partial<PaymentAccountsMap> | null | undefined,
   legacyNumbers?: Partial<WalletNumbersMap> | null
-): PaymentAccountsMap {
-  const result: PaymentAccountsMap = { bkash: [], nagad: [], rocket: [] };
+): NormalizedPaymentAccountsMap {
+  const result = buildEmptyPaymentAccounts();
 
   for (const method of CHECKOUT_METHODS) {
     const entries = Array.isArray(rawAccounts?.[method]) ? rawAccounts[method]! : [];
@@ -134,9 +288,14 @@ export function normalizePaymentAccounts(
       const norm = normalizeBdPhone(String(item.number || ''));
       if (!norm || seen.has(norm)) continue;
       seen.add(norm);
+      const entryType: NumberAccountType = item.type === 'agent' ? 'agent' : 'personal';
+      const actionType = normalizePaymentActionType(item.actionType, entryType);
+      const customInstruction = sanitizeCustomInstruction(item.customInstruction);
       cleaned.push({
         number: norm,
-        type: item.type === 'agent' ? 'agent' : 'personal',
+        type: entryType,
+        actionType,
+        ...(customInstruction ? { customInstruction } : {}),
         active: item.active !== undefined ? Boolean(item.active) : true,
       });
       if (cleaned.length >= 10) break;
@@ -145,7 +304,12 @@ export function normalizePaymentAccounts(
     if (cleaned.length === 0 && legacyNumbers?.[method]) {
       const legacyNorm = normalizeBdPhone(String(legacyNumbers[method] || ''));
       if (legacyNorm) {
-        cleaned.push({ number: legacyNorm, type: 'personal', active: true });
+        cleaned.push({
+          number: legacyNorm,
+          type: 'personal',
+          actionType: 'send_money',
+          active: true,
+        });
       }
     }
 
@@ -156,14 +320,15 @@ export function normalizePaymentAccounts(
 }
 
 /**
- * Keeps legacy `numbers` map synced to the first active account per method
- * so existing Worker / matching / dashboard consumers continue working seamlessly.
+ * Keeps legacy `numbers` map strictly derived from canonical `paymentAccounts`
+ * so Worker / matching / setup-checklist consumers read the exact same source.
  */
 export function syncLegacyNumbersFromAccounts(
-  accounts: PaymentAccountsMap,
+  accounts: Partial<PaymentAccountsMap> | NormalizedPaymentAccountsMap,
   existingUpay = ''
 ): WalletNumbersMap {
-  const pickPrimary = (list: MethodNumberEntry[]): string => {
+  const pickPrimary = (list: MethodNumberEntry[] | undefined): string => {
+    if (!Array.isArray(list) || list.length === 0) return '';
     const activeFirst = list.find((item) => item.active && item.number);
     return activeFirst?.number || list[0]?.number || '';
   };
@@ -171,7 +336,220 @@ export function syncLegacyNumbersFromAccounts(
     bkash: pickPrimary(accounts.bkash),
     nagad: pickPrimary(accounts.nagad),
     rocket: pickPrimary(accounts.rocket),
-    upay: existingUpay,
+    upay: accounts.upay !== undefined ? pickPrimary(accounts.upay) : existingUpay,
+  };
+}
+
+export function hasSavedNumberForMethod(
+  accounts: Partial<PaymentAccountsMap> | null | undefined,
+  method: WalletMethod
+): boolean {
+  const list = accounts?.[method];
+  if (!Array.isArray(list) || list.length === 0) return false;
+  return list.some((entry) => Boolean(entry && normalizeBdPhone(String(entry.number || ''))));
+}
+
+/**
+ * Enforces the Smart Toggle invariant:
+ * A method with zero saved numbers can NEVER be ON (`true`).
+ */
+export function enforceEnabledRequiresSavedNumber(
+  enabled: Partial<WalletEnabledMap> | null | undefined,
+  accounts: Partial<PaymentAccountsMap> | null | undefined
+): WalletEnabledMap {
+  return {
+    bkash: hasSavedNumberForMethod(accounts, 'bkash') ? Boolean(enabled?.bkash) : false,
+    nagad: hasSavedNumberForMethod(accounts, 'nagad') ? Boolean(enabled?.nagad) : false,
+    rocket: hasSavedNumberForMethod(accounts, 'rocket') ? Boolean(enabled?.rocket) : false,
+    upay: hasSavedNumberForMethod(accounts, 'upay') ? Boolean(enabled?.upay) : false,
+  };
+}
+
+export function validateStoreWalletNumber(
+  raw: string,
+  existingEntries: MethodNumberEntry[] = [],
+  editingIndex: number | null = null
+): FieldValidationResult {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      normalized: '',
+      errorBn: '১১ ডিজিটের বাংলাদেশি মোবাইল নম্বর লিখুন (যেমন 017XXXXXXXX)।',
+    };
+  }
+  const normalized = normalizeBdPhone(trimmed);
+  if (!normalized) {
+    return {
+      valid: false,
+      normalized: '',
+      errorBn: 'সঠিক ১১ ডিজিটের বাংলাদেশি মোবাইল নম্বর দিন (01XXXXXXXXX)।',
+    };
+  }
+  const isDuplicate = existingEntries.some(
+    (entry, idx) => idx !== editingIndex && normalizeBdPhone(entry.number) === normalized
+  );
+  if (isDuplicate) {
+    return {
+      valid: false,
+      normalized,
+      errorBn: 'এই নম্বরটি ইতিমধ্যেই সংরক্ষিত আছে। অনুগ্রহ করে ভিন্ন নম্বর দিন।',
+    };
+  }
+  return { valid: true, normalized, errorBn: null };
+}
+
+export interface SaveMethodNumberRowResult {
+  ok: boolean;
+  errorBn: string | null;
+  savedIndex: number | null;
+  accounts: NormalizedPaymentAccountsMap;
+  enabled: WalletEnabledMap;
+}
+
+/**
+ * Pure Save operation for adding (`rowIndex === null`) or editing (`rowIndex >= 0`) a number row.
+ * - Rejects invalid/duplicate numbers without discarding saved state.
+ * - NEVER silently forces an OFF method ON when saving a number.
+ */
+export function saveMethodNumberRow(input: {
+  accounts: Partial<PaymentAccountsMap> | null | undefined;
+  enabled: Partial<WalletEnabledMap> | null | undefined;
+  method: WalletMethod;
+  rowIndex: number | null;
+  draft: MethodNumberEntry;
+}): SaveMethodNumberRowResult {
+  const baseAccounts = normalizePaymentAccounts(input.accounts);
+  const currentList = baseAccounts[input.method];
+  const check = validateStoreWalletNumber(input.draft.number, currentList, input.rowIndex);
+
+  if (!check.valid) {
+    return {
+      ok: false,
+      errorBn: check.errorBn,
+      savedIndex: null,
+      accounts: baseAccounts,
+      enabled: enforceEnabledRequiresSavedNumber(input.enabled, baseAccounts),
+    };
+  }
+
+  const entryType: NumberAccountType = input.draft.type === 'agent' ? 'agent' : 'personal';
+  const actionType = normalizePaymentActionType(input.draft.actionType, entryType);
+  const customInstruction = sanitizeCustomInstruction(input.draft.customInstruction);
+  const cleanedEntry: MethodNumberEntry = {
+    number: check.normalized,
+    type: entryType,
+    actionType,
+    ...(customInstruction ? { customInstruction } : {}),
+    active: input.draft.active !== undefined ? Boolean(input.draft.active) : true,
+  };
+
+  const nextList = [...currentList];
+  let savedIndex: number;
+  if (input.rowIndex !== null && input.rowIndex >= 0 && input.rowIndex < nextList.length) {
+    nextList[input.rowIndex] = cleanedEntry;
+    savedIndex = input.rowIndex;
+  } else {
+    if (nextList.length >= 10) {
+      return {
+        ok: false,
+        errorBn: 'প্রতি মাধ্যমে সর্বোচ্চ ১০টি নম্বর যোগ করা যায়।',
+        savedIndex: null,
+        accounts: baseAccounts,
+        enabled: enforceEnabledRequiresSavedNumber(input.enabled, baseAccounts),
+      };
+    }
+    nextList.push(cleanedEntry);
+    savedIndex = nextList.length - 1;
+  }
+
+  const nextAccounts: NormalizedPaymentAccountsMap = {
+    ...baseAccounts,
+    [input.method]: nextList,
+  };
+
+  // CRITICAL: Saving a number MUST NOT silently force `enabled[method]` to `true`.
+  const nextEnabled = enforceEnabledRequiresSavedNumber(input.enabled, nextAccounts);
+
+  return {
+    ok: true,
+    errorBn: null,
+    savedIndex,
+    accounts: nextAccounts,
+    enabled: nextEnabled,
+  };
+}
+
+/**
+ * Pure Delete operation for a saved number row.
+ * Deleting the last number of a method returns it to empty and forces OFF.
+ */
+export function deleteMethodNumberRow(input: {
+  accounts: Partial<PaymentAccountsMap> | null | undefined;
+  enabled: Partial<WalletEnabledMap> | null | undefined;
+  method: WalletMethod;
+  rowIndex: number;
+}): {
+  accounts: NormalizedPaymentAccountsMap;
+  enabled: WalletEnabledMap;
+  becameEmpty: boolean;
+} {
+  const baseAccounts = normalizePaymentAccounts(input.accounts);
+  const nextList = baseAccounts[input.method].filter((_, idx) => idx !== input.rowIndex);
+  const nextAccounts: NormalizedPaymentAccountsMap = {
+    ...baseAccounts,
+    [input.method]: nextList,
+  };
+  const nextEnabled = enforceEnabledRequiresSavedNumber(input.enabled, nextAccounts);
+  return {
+    accounts: nextAccounts,
+    enabled: nextEnabled,
+    becameEmpty: nextList.length === 0,
+  };
+}
+
+/**
+ * Pure Smart Toggle operation.
+ * - Cannot turn ON a method with 0 saved numbers (returns hint `"আগে নম্বর সংরক্ষণ করুন"`).
+ * - Turning OFF preserves saved numbers intact and returns inline note.
+ */
+export function toggleStoreMethodEnabled(input: {
+  accounts: Partial<PaymentAccountsMap> | null | undefined;
+  enabled: Partial<WalletEnabledMap> | null | undefined;
+  method: WalletMethod;
+}): {
+  changed: boolean;
+  blockedReasonBn: string | null;
+  turnedOffWithNumbers: boolean;
+  inlineNoteBn: string | null;
+  enabled: WalletEnabledMap;
+} {
+  const baseAccounts = normalizePaymentAccounts(input.accounts);
+  const currentEnabled = enforceEnabledRequiresSavedNumber(input.enabled, baseAccounts);
+  const hasNumbers = baseAccounts[input.method].length > 0;
+
+  if (!hasNumbers) {
+    return {
+      changed: false,
+      blockedReasonBn: 'আগে নম্বর সংরক্ষণ করুন',
+      turnedOffWithNumbers: false,
+      inlineNoteBn: null,
+      enabled: { ...currentEnabled, [input.method]: false },
+    };
+  }
+
+  const nextValue = !currentEnabled[input.method];
+  const nextEnabled: WalletEnabledMap = {
+    ...currentEnabled,
+    [input.method]: nextValue,
+  };
+
+  return {
+    changed: true,
+    blockedReasonBn: null,
+    turnedOffWithNumbers: !nextValue && hasNumbers,
+    inlineNoteBn: !nextValue ? 'কাস্টমাররা এই মাধ্যমটি আর দেখতে পাবেন না' : null,
+    enabled: nextEnabled,
   };
 }
 
@@ -185,10 +563,14 @@ export function resolveStoreCheckoutOptions(
     if (!store.numberEnabled[method]) continue;
     const activeEntries = accounts[method].filter((entry) => entry.active && entry.number);
     if (activeEntries.length === 0) continue;
+    const first = activeEntries[0];
+    const customInstruction = sanitizeCustomInstruction(first.customInstruction);
     options.push({
       method,
-      number: activeEntries[0].number,
-      type: activeEntries[0].type,
+      number: first.number,
+      type: first.type,
+      actionType: normalizePaymentActionType(first.actionType, first.type),
+      ...(customInstruction ? { customInstruction } : {}),
       accountCount: activeEntries.length,
     });
   }
@@ -198,7 +580,7 @@ export function resolveStoreCheckoutOptions(
 
 /**
  * Resolves enabled checkout methods from a Worker session status response.
- * Never invents methods or numbers if the session does not include them.
+ * Never invents methods or leaks OFF methods when `enabledMethods` is provided.
  */
 export function resolveSessionCheckoutOptions(
   session: WorkerSessionStatusResponse
@@ -206,31 +588,45 @@ export function resolveSessionCheckoutOptions(
   const options: CheckoutMethodOption[] = [];
 
   if (session.methodNumbers && typeof session.methodNumbers === 'object') {
-    const allowed = Array.isArray(session.enabledMethods)
-      ? session.enabledMethods
-      : (Object.keys(session.methodNumbers) as CheckoutWalletMethod[]);
+    const hasExplicitEnabledList = Array.isArray(session.enabledMethods);
+    const allowed = hasExplicitEnabledList
+      ? session.enabledMethods!
+      : (Object.keys(session.methodNumbers) as WalletMethod[]);
 
-    for (const method of CHECKOUT_METHODS) {
+    for (const method of ALL_SESSION_METHODS) {
       if (!allowed.includes(method)) continue;
       const entry = session.methodNumbers[method];
       if (!entry || !entry.number) continue;
+      const entryType: NumberAccountType = entry.type === 'agent' ? 'agent' : 'personal';
+      const customInstruction = sanitizeCustomInstruction(entry.customInstruction);
       options.push({
         method,
         number: String(entry.number),
-        type: entry.type === 'agent' ? 'agent' : 'personal',
+        type: entryType,
+        actionType: normalizePaymentActionType(entry.actionType, entryType),
+        ...(customInstruction ? { customInstruction } : {}),
         accountCount: 1,
       });
     }
-    if (options.length > 0) return options;
+    if (hasExplicitEnabledList || options.length > 0) {
+      return options;
+    }
   }
 
   // Backward-compatible single-method session from current Worker
   const m = String(session.method || '').toLowerCase();
-  if ((m === 'bkash' || m === 'nagad' || m === 'rocket') && session.number) {
+  if ((m === 'bkash' || m === 'nagad' || m === 'rocket' || m === 'upay') && session.number) {
+    if (Array.isArray(session.enabledMethods) && !session.enabledMethods.includes(m)) {
+      return [];
+    }
+    const entryType: NumberAccountType = session.numberType === 'agent' ? 'agent' : 'personal';
+    const customInstruction = sanitizeCustomInstruction(session.customInstruction);
     options.push({
       method: m,
       number: String(session.number),
-      type: session.numberType === 'agent' ? 'agent' : 'personal',
+      type: entryType,
+      actionType: normalizePaymentActionType(session.actionType, entryType),
+      ...(customInstruction ? { customInstruction } : {}),
       accountCount: 1,
     });
   }
@@ -315,12 +711,16 @@ export function buildMerchantReturnUrl(
   }
 }
 
-export function mapFailureReasonBn(rawReason?: string | null): {
+export function mapFailureReasonBn(
+  rawReason?: string | null,
+  expectedAmountPaisa?: number | null,
+  receivedAmountPaisa?: number | null
+): {
   headline: string;
   reasons: string[];
 } {
   const lower = (rawReason || '').toLowerCase();
-  if (lower.includes('duplicate') || lower.includes('used')) {
+  if (lower.includes('duplicate') || lower.includes('used') || lower === 'trxid_used') {
     return {
       headline: 'এই Transaction ID আগেই ব্যবহার করা হয়েছে',
       reasons: [
@@ -329,12 +729,37 @@ export function mapFailureReasonBn(rawReason?: string | null): {
       ],
     };
   }
-  if (lower.includes('amount') || lower.includes('mismatch')) {
+  if (lower.includes('expir') || lower === 'expired') {
+    return {
+      headline: 'সেশনের নির্ধারিত সময় (১৫ মিনিট) শেষ হয়ে গেছে',
+      reasons: [
+        'নির্ধারিত সময়ের মধ্যে পেমেন্ট যাচাই সম্পন্ন হয়নি।',
+        'অনুগ্রহ করে নতুন পেমেন্ট সেশন তৈরি করে আবার চেষ্টা করুন।',
+      ],
+    };
+  }
+  if (lower.includes('amount') || lower.includes('mismatch') || lower === 'amount_mismatch') {
+    const detailLine =
+      typeof expectedAmountPaisa === 'number' &&
+      expectedAmountPaisa > 0 &&
+      typeof receivedAmountPaisa === 'number' &&
+      receivedAmountPaisa > 0
+        ? `প্রত্যাশিত পরিমাণ ছিল ${formatBanglaTaka(expectedAmountPaisa)}, কিন্তু SMS-এ পাওয়া গেছে ${formatBanglaTaka(receivedAmountPaisa)}।`
+        : 'নির্ধারিত ঠিক পরিমাণ টাকা পাঠানো না হলে স্বয়ংক্রিয় যাচাই ব্যর্থ হয়।';
     return {
       headline: 'পাঠানো টাকার পরিমাণ নির্ধারিত পরিমাণের সাথে মেলেনি',
       reasons: [
-        'নির্ধারিত ঠিক পরিমাণ টাকা পাঠানো না হলে স্বয়ংক্রিয় যাচাই ব্যর্থ হয়।',
+        detailLine,
         'সঠিক পরিমাণ পাঠিয়ে আবার চেষ্টা করুন অথবা দোকানের সাথে যোগাযোগ করুন।',
+      ],
+    };
+  }
+  if (lower === 'no_sms_yet' || lower.includes('no_sms')) {
+    return {
+      headline: 'এখনো কোনো ম্যাচিং SMS আসেনি',
+      reasons: [
+        'SMS পৌঁছাতে কয়েক সেকেন্ড সময় লাগতে পারে — একটু পর আবার চেষ্টা করুন।',
+        'ফোনের PayVerify অ্যাপটি চালু এবং ইন্টারনেটে যুক্ত আছে কিনা নিশ্চিত করুন।',
       ],
     };
   }
@@ -430,5 +855,5 @@ export async function compressLogoFileToDataUrl(file: File): Promise<string> {
 }
 
 export function buildEmptyEnabledMap(): WalletEnabledMap {
-  return { bkash: true, nagad: true, rocket: true, upay: false };
+  return { bkash: false, nagad: false, rocket: false, upay: false };
 }

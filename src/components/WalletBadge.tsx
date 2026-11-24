@@ -5,24 +5,21 @@ import {
   type SmsMatchResult,
   type WalletMethod,
 } from '../types/payment';
+import { PaymentLogo } from './PaymentLogo';
 
 export const WalletMethodChip: React.FC<{ method: WalletMethod }> = ({ method }) => {
   const meta = WALLET_META[method] || WALLET_META.bkash;
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-semibold whitespace-nowrap border"
+      className="inline-flex items-center gap-2 pr-2.5 pl-1 py-0.5 rounded-xl text-xs font-semibold whitespace-nowrap border"
       style={{
         backgroundColor: meta.softBg,
         color: meta.color,
         borderColor: meta.borderColor,
       }}
     >
-      <span
-        className="w-1.5 h-1.5 rounded-full shrink-0"
-        style={{ backgroundColor: meta.color }}
-        aria-hidden="true"
-      />
-      {meta.name}
+      <PaymentLogo method={method} size="sm" />
+      <span>{meta.name}</span>
     </span>
   );
 };
@@ -91,3 +88,55 @@ export const SmsMatchChip: React.FC<{ result: SmsMatchResult }> = ({ result }) =
     </span>
   );
 };
+
+export const TestModeBadge: React.FC<{ label?: string }> = ({ label = 'TEST' }) => (
+  <span
+    className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-extrabold tracking-wide bg-orange-100 text-orange-800 border border-orange-300 whitespace-nowrap"
+    data-testid="test-mode-badge"
+  >
+    {label}
+  </span>
+);
+
+export const TestResultChip: React.FC<{
+  result: 'pending' | 'verified' | 'verified_simulated' | 'failed';
+  cancelled?: boolean;
+}> = ({ result, cancelled }) => {
+  if (cancelled) {
+    return (
+      <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium border whitespace-nowrap bg-slate-100 text-slate-600 border-slate-200">
+        বাতিল হয়েছে
+      </span>
+    );
+  }
+  const config: Record<
+    'pending' | 'verified' | 'verified_simulated' | 'failed',
+    { label: string; classes: string }
+  > = {
+    pending: {
+      label: 'অপেক্ষমাণ',
+      classes: 'bg-amber-50 text-amber-800 border-amber-200',
+    },
+    verified: {
+      label: 'যাচাই হয়েছে',
+      classes: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+    },
+    verified_simulated: {
+      label: 'সিমুলেশনে যাচাই হয়েছে',
+      classes: 'bg-orange-50 text-orange-800 border-orange-300',
+    },
+    failed: {
+      label: 'ব্যর্থ',
+      classes: 'bg-rose-50 text-rose-800 border-rose-200',
+    },
+  };
+  const item = config[result] || config.pending;
+  return (
+    <span
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold border whitespace-nowrap ${item.classes}`}
+    >
+      {item.label}
+    </span>
+  );
+};
+

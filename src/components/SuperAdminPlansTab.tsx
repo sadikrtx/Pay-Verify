@@ -441,6 +441,7 @@ export const SuperAdminPlansTab: React.FC = () => {
               onChange={(e) => setTrialPlanId(e.target.value)}
               className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white"
             >
+              <option value="">কোনো ফ্রি ট্রায়াল নেই (বন্ধ)</option>
               {nonArchivedPlans.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}

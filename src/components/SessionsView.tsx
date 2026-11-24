@@ -6,8 +6,10 @@ import {
   CheckCircle2,
   Copy,
   ExternalLink,
+  FlaskConical,
   Plus,
   Search,
+  Trash2,
   X,
   XCircle,
 } from 'lucide-react';
@@ -19,6 +21,10 @@ import {
   takaToPaisa,
 } from '../lib/money';
 import {
+  buildTestHistoryEntries,
+  getTestSessionDisplayState,
+} from '../lib/testVerification';
+import {
   WALLET_META,
   WALLET_METHODS,
   type PaySessionDoc,
@@ -26,21 +32,40 @@ import {
   type WalletMethod,
   type WorkerCreateSessionResponse,
 } from '../types/payment';
-import { SessionStatusChip, WalletMethodChip } from './WalletBadge';
+import {
+  SessionStatusChip,
+  TestModeBadge,
+  TestResultChip,
+  WalletMethodChip,
+} from './WalletBadge';
+import { PaymentLogo } from './PaymentLogo';
+import { TestVerificationModal } from './TestVerificationModal';
 
 type FilterTab = 'all' | SessionStatus;
 
-export const SessionsView: React.FC = () => {
+interface SessionsViewProps {
+  autoOpenTestModal?: boolean;
+  onConsumedAutoOpen?: () => void;
+}
+
+export const SessionsView: React.FC<SessionsViewProps> = ({
+  autoOpenTestModal,
+  onConsumedAutoOpen,
+}) => {
   const {
     platformConfig,
     planEvaluation,
+    accessibleStores,
     selectedStore,
     selectedStorePermissions,
     selectedStoreIsPaused,
+    accountSessions,
     storeSessions,
     createManualSessionViaWorker,
     cancelWaitingSession,
     manualConfirmSession,
+    testHistoryClearedBeforeMs,
+    clearTestHistory,
   } = usePayVerify();
 
   const [filter, setFilter] = useState<FilterTab>('all');
@@ -51,6 +76,7 @@ export const SessionsView: React.FC = () => {
 
   // Create Manual Session Modal
   const [showCreate, setShowCreate] = useState(false);
+  const [showTestModal, setShowTestModal] = useState(false);
   const [orderId, setOrderId] = useState('');
   const [amountTaka, setAmountTaka] = useState('');
   const [method, setMethod] = useState<WalletMethod>('bkash');
@@ -71,6 +97,24 @@ export const SessionsView: React.FC = () => {
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (autoOpenTestModal) {
+      setShowTestModal(true);
+      onConsumedAutoOpen?.();
+    }
+  }, [autoOpenTestModal, onConsumedAutoOpen]);
+
+  const testHistory = useMemo(
+    () =>
+      buildTestHistoryEntries(
+        accountSessions,
+        accessibleStores,
+        nowMs,
+        testHistoryClearedBeforeMs
+      ),
+    [accountSessions, accessibleStores, nowMs, testHistoryClearedBeforeMs]
+  );
 
   const filteredSessions = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -184,21 +228,34 @@ export const SessionsView: React.FC = () => {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">লাইভ সেশন</h1>
-        {selectedStorePermissions.canCreateSession && (
-          <button
-            type="button"
-            disabled={!canCreate}
-            onClick={() => {
-              setShowCreate(true);
-              setCreateError(null);
-              setCreatedSession(null);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:opacity-50 transition-colors shadow-xs"
-          >
-            <Plus className="w-4 h-4" />
-            নতুন সেশন তৈরি করুন
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {accessibleStores.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowTestModal(true)}
+              data-testid="open-test-verification-btn"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-50 border border-orange-300 text-orange-900 text-sm font-bold hover:bg-orange-100 transition-colors"
+            >
+              <FlaskConical className="w-4 h-4 text-orange-700" />
+              টেস্ট যাচাই
+            </button>
+          )}
+          {selectedStorePermissions.canCreateSession && (
+            <button
+              type="button"
+              disabled={!canCreate}
+              onClick={() => {
+                setShowCreate(true);
+                setCreateError(null);
+                setCreatedSession(null);
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:opacity-50 transition-colors shadow-xs"
+            >
+              <Plus className="w-4 h-4" />
+              নতুন সেশন তৈরি করুন
+            </button>
+          )}
+        </div>
       </div>
 
       {selectedStoreIsPaused && (
@@ -276,15 +333,25 @@ export const SessionsView: React.FC = () => {
                 {filteredSessions.map((s) => {
                   const remainingMs = Math.max(0, s.expiresAtMs - nowMs);
                   const isWaiting = s.status === 'waiting';
+                  const testDisplay = s.isTest ? getTestSessionDisplayState(s, nowMs) : null;
                   return (
                     <tr key={s.id} className="hover:bg-slate-50/70 transition-colors">
                       <td className="py-3.5 px-4">
-                        <div className="font-semibold text-slate-900 font-mono text-xs">
-                          {s.orderId}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-slate-900 font-mono text-xs">
+                            {s.orderId}
+                          </span>
+                          {s.isTest && <TestModeBadge />}
                         </div>
                         <div className="text-[11px] text-slate-400 mt-0.5">
-                          {s.source === 'manual' ? 'ম্যানুয়াল' : 'API / KenaX'} ·{' '}
-                          {formatBanglaDateTime(s.createdAtMs)}
+                          {s.isTest
+                            ? s.testType === 'simulation'
+                              ? 'টেস্ট · সিমুলেশন'
+                              : 'টেস্ট · আসল SMS'
+                            : s.source === 'manual'
+                              ? 'ম্যানুয়াল'
+                              : 'API / KenaX'}{' '}
+                          · {formatBanglaDateTime(s.createdAtMs)}
                         </div>
                         {s.trxId && (
                           <div className="text-[11px] font-mono text-emerald-700 mt-0.5">
@@ -325,7 +392,21 @@ export const SessionsView: React.FC = () => {
                         )}
                       </td>
                       <td className="py-3.5 px-4">
-                        <SessionStatusChip status={s.status} manual={s.manual} />
+                        {testDisplay ? (
+                          <div className="space-y-1">
+                            <TestResultChip
+                              result={testDisplay.code}
+                              cancelled={s.status === 'cancelled'}
+                            />
+                            {testDisplay.reasonBn && (
+                              <div className="text-[11px] text-rose-700 max-w-[200px]">
+                                {testDisplay.reasonBn}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <SessionStatusChip status={s.status} manual={s.manual} />
+                        )}
                       </td>
                       <td className="py-3.5 px-4">
                         <div className="flex items-center justify-end gap-1.5 flex-wrap">
@@ -380,6 +461,82 @@ export const SessionsView: React.FC = () => {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Test History (Last 10) */}
+      <div
+        className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden"
+        data-testid="test-history-card"
+      >
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <FlaskConical className="w-4 h-4 text-orange-600 shrink-0" />
+            <h2 className="text-base font-bold text-slate-900">টেস্ট ইতিহাস (সর্বশেষ ১০টি)</h2>
+            <TestModeBadge />
+          </div>
+          {testHistory.length > 0 && (
+            <button
+              type="button"
+              onClick={clearTestHistory}
+              data-testid="clear-test-history-btn"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-rose-700 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              টেস্ট ইতিহাস মুছুন
+            </button>
+          )}
+        </div>
+
+        {testHistory.length === 0 ? (
+          <div className="py-8 px-6 text-center text-xs text-slate-500">
+            কোনো সাম্প্রতিক টেস্ট যাচাই নেই।
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {testHistory.map((item) => (
+              <div
+                key={item.sessionId}
+                className="px-5 py-3 flex flex-wrap items-center justify-between gap-3 text-xs hover:bg-slate-50/70"
+                data-testid={`test-history-row-${item.sessionId}`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <PaymentLogo method={item.method} size="sm" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-slate-900">{item.storeName}</span>
+                      <span className="text-slate-500">
+                        · {WALLET_META[item.method].name} ·{' '}
+                        {item.testType === 'simulation' ? 'সিমুলেশন' : 'আসল SMS'}
+                      </span>
+                      <TestModeBadge />
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                      <span>{formatBanglaDateTime(item.createdAtMs)}</span>
+                      {item.trxId && (
+                        <span className="font-mono text-slate-600">TrxID: {item.trxId}</span>
+                      )}
+                    </div>
+                    {item.failureReasonBn && (
+                      <div className="text-[11px] text-rose-700 mt-0.5 font-medium">
+                        {item.failureReasonBn}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="font-bold text-slate-900 tabular-nums">
+                    {formatBdt(item.amountPaisa)}
+                  </span>
+                  <TestResultChip
+                    result={item.result}
+                    cancelled={item.resultLabelBn === 'বাতিল হয়েছে'}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -501,18 +658,15 @@ export const SessionsView: React.FC = () => {
                           key={m}
                           type="button"
                           onClick={() => setMethod(m)}
-                          className="py-2 px-3 rounded-xl border text-sm font-semibold transition-all text-left flex items-center gap-2"
+                          className="py-2 px-2.5 rounded-xl border text-sm font-semibold transition-all text-left flex items-center gap-2.5"
                           style={{
                             borderColor: selected ? meta.color : '#E2E8F0',
                             backgroundColor: selected ? meta.softBg : '#FFFFFF',
                             color: selected ? meta.color : '#334155',
                           }}
                         >
-                          <span
-                            className="w-2 h-2 rounded-full shrink-0"
-                            style={{ backgroundColor: meta.color }}
-                          />
-                          {meta.name}
+                          <PaymentLogo method={m} size="sm" />
+                          <span>{meta.name}</span>
                         </button>
                       );
                     })}
@@ -655,6 +809,11 @@ export const SessionsView: React.FC = () => {
           </div>
         </div>
       )}
+
+      <TestVerificationModal
+        open={showTestModal}
+        onClose={() => setShowTestModal(false)}
+      />
     </div>
   );
 };

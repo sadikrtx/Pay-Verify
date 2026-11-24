@@ -25,12 +25,19 @@ import {
 } from '../lib/workerClient';
 import { formatCountdown, parseTimestampMs } from '../lib/money';
 import {
+  buildActionHeadlineBn,
+  buildActionStepsBn,
   buildMerchantReturnUrl,
+  buildTrxIdHintBn,
   CHECKOUT_METHOD_BRANDS,
   formatAccountTypeHintBn,
   formatAccountTypeLabel,
   formatBanglaTaka,
+  formatCopyableAmount,
   mapFailureReasonBn,
+  normalizePaymentActionType,
+  parseCustomInstructionLines,
+  PAYMENT_ACTION_LABELS_BN,
   resolveSessionCheckoutOptions,
   toBanglaDigits,
   validateSenderPhone,
@@ -38,9 +45,10 @@ import {
   type CheckoutMethodOption,
   type MerchantReturnStatus,
 } from '../lib/checkoutFlow';
-import type { CheckoutWalletMethod, WorkerSessionStatusResponse } from '../types/payment';
+import type { WalletMethod, WorkerSessionStatusResponse } from '../types/payment';
 
-import { PaymentMethodMark, StoreBrandAvatar } from './PaymentMethodMarks';
+import { StoreBrandAvatar } from './PaymentMethodMarks';
+import { PaymentLogo } from './PaymentLogo';
 
 export interface PreviewCheckoutConfig {
   storeName: string;
@@ -52,13 +60,19 @@ export interface PreviewCheckoutConfig {
   sessionMinutes?: number;
   methods: CheckoutMethodOption[];
   initialStep?: 'choose' | 'method' | 'verifying' | 'paid' | 'failed' | 'expired';
-  initialMethod?: CheckoutWalletMethod;
+  initialMethod?: WalletMethod;
   onClosePreview?: () => void;
 }
 
 interface HostedPaymentPageProps {
   sessionId: string;
   previewConfig?: PreviewCheckoutConfig;
+  workerBaseUrlOverride?: string;
+  embedded?: boolean;
+  onTerminalStatus?: (
+    status: 'paid' | 'failed' | 'expired' | 'cancelled',
+    info?: { trxId?: string | null; failureReason?: string | null }
+  ) => void;
 }
 
 type CheckoutStep = 'choose' | 'method' | 'verifying' | 'paid' | 'failed' | 'expired' | 'cancelled';
@@ -66,11 +80,23 @@ type CheckoutStep = 'choose' | 'method' | 'verifying' | 'paid' | 'failed' | 'exp
 export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
   sessionId,
   previewConfig,
+  workerBaseUrlOverride,
+  embedded: embeddedProp,
+  onTerminalStatus,
 }) => {
   const isPreview = Boolean(previewConfig);
+  const embedded = useMemo(() => {
+    if (typeof embeddedProp === 'boolean') return embeddedProp;
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('embed') === '1';
+  }, [embeddedProp]);
 
-  const workerBaseUrl = useMemo(() => resolvePublicWorkerBaseUrl(), []);
+  const workerBaseUrl = useMemo(
+    () => (workerBaseUrlOverride ? workerBaseUrlOverride.trim().replace(/\/+$/, '') : resolvePublicWorkerBaseUrl()),
+    [workerBaseUrlOverride]
+  );
   const urlFallbacks = useMemo(() => resolvePublicRedirectFallbacks(), []);
+  const notifiedTerminalRef = useRef<string | null>(null);
 
   // Real session state (populated ONLY from Worker response; never demo fallback)
   const [sessionData, setSessionData] = useState<WorkerSessionStatusResponse | null>(null);
@@ -88,7 +114,7 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
     if (previewConfig?.initialStep) return previewConfig.initialStep;
     return 'choose';
   });
-  const [selectedMethod, setSelectedMethod] = useState<CheckoutWalletMethod | null>(() => {
+  const [selectedMethod, setSelectedMethod] = useState<WalletMethod | null>(() => {
     if (previewConfig?.initialMethod) return previewConfig.initialMethod;
     if (
       previewConfig &&
@@ -107,6 +133,9 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
   const [trxError, setTrxError] = useState<string | null>(null);
   const [senderError, setSenderError] = useState<string | null>(null);
   const [copiedNumber, setCopiedNumber] = useState(false);
+  const [copiedAmount, setCopiedAmount] = useState(false);
+  const [receiverCardVisible, setReceiverCardVisible] = useState(true);
+  const receiverCardRef = useRef<HTMLDivElement | null>(null);
 
   // Result state tracking
   const [submittedTrxId, setSubmittedTrxId] = useState<string | null>(
@@ -127,6 +156,20 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  // Notify optional parent funnel listener once on terminal status
+  useEffect(() => {
+    if (isPreview || !onTerminalStatus) return;
+    if (step === 'paid' || step === 'failed' || step === 'expired' || step === 'cancelled') {
+      if (notifiedTerminalRef.current !== step) {
+        notifiedTerminalRef.current = step;
+        onTerminalStatus(step, {
+          trxId: submittedTrxId,
+          failureReason,
+        });
+      }
+    }
+  }, [isPreview, onTerminalStatus, step, submittedTrxId, failureReason]);
 
   // Poll Worker for real sessions ONLY (never reads Firestore)
   const pollStatus = useCallback(async () => {
@@ -292,11 +335,34 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
     return () => window.clearInterval(interval);
   }, [autoRedirectTarget]);
 
-  const handleSelectMethod = (method: CheckoutWalletMethod) => {
+  // Track receiving-number card visibility on mobile to reveal slim sticky bar when scrolling down
+  useEffect(() => {
+    if (loading || effectiveStep !== 'method' || typeof IntersectionObserver === 'undefined') {
+      setReceiverCardVisible(true);
+      return;
+    }
+    const el = receiverCardRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry) {
+          setReceiverCardVisible(entry.isIntersecting);
+        }
+      },
+      { threshold: 0.1 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loading, effectiveStep, activeOption?.method]);
+
+  const handleSelectMethod = (method: WalletMethod) => {
     setSelectedMethod(method);
     setTrxError(null);
     setSenderError(null);
     setCopiedNumber(false);
+    setCopiedAmount(false);
+    setReceiverCardVisible(true);
     setStep('method');
   };
 
@@ -309,6 +375,18 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
     } catch {
       setCopiedNumber(true);
       window.setTimeout(() => setCopiedNumber(false), 2200);
+    }
+  };
+
+  const handleCopyAmount = async (amt: string) => {
+    if (!amt) return;
+    try {
+      await navigator.clipboard.writeText(amt);
+      setCopiedAmount(true);
+      window.setTimeout(() => setCopiedAmount(false), 2200);
+    } catch {
+      setCopiedAmount(true);
+      window.setTimeout(() => setCopiedAmount(false), 2200);
     }
   };
 
@@ -450,24 +528,102 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
   }
 
   const formattedAmount = formatBanglaTaka(payablePaisa);
+  const copyableAmount = formatCopyableAmount(payablePaisa);
   const formattedCountdown =
     expiresAtMs > 0 ? toBanglaDigits(formatCountdown(remainingMs)) : '--:--';
   const lowTime = remainingMs > 0 && remainingMs <= 120_000;
   const activeBrand = activeOption ? CHECKOUT_METHOD_BRANDS[activeOption.method] : null;
-  const failureInfo = mapFailureReasonBn(failureReason);
+  const activeActionType = activeOption
+    ? normalizePaymentActionType(activeOption.actionType, activeOption.type)
+    : 'send_money';
+  const customInstructionLines = activeOption
+    ? parseCustomInstructionLines(activeOption.customInstruction)
+    : [];
+  const autoActionSteps =
+    activeOption && customInstructionLines.length === 0
+      ? buildActionStepsBn(
+          activeOption.method,
+          activeActionType,
+          formattedAmount,
+          activeOption.number
+        )
+      : [];
+  const failureInfo = mapFailureReasonBn(
+    failureReason,
+    sessionData?.expectedAmountPaisa ?? payablePaisa,
+    sessionData?.receivedAmountPaisa
+  );
 
   return (
-    <div className="min-h-screen bg-[#F2F5F9] text-slate-900 flex flex-col justify-between py-4 px-3 sm:py-8 sm:px-6">
-      <div className="w-full max-w-[840px] mx-auto space-y-3.5">
+    <div
+      className={
+        embedded
+          ? 'bg-transparent text-slate-900 flex flex-col'
+          : 'min-h-screen bg-[#F2F5F9] text-slate-900 flex flex-col'
+      }
+      data-testid={embedded ? 'hosted-checkout-embedded' : 'hosted-checkout-standalone'}
+    >
+      {/* Slim Mobile Sticky Bar when customer scrolls down to verification form */}
+      {effectiveStep === 'method' && activeOption && activeBrand && !receiverCardVisible && (
+        <div className="sticky top-0 z-[60] lg:hidden h-0 overflow-visible">
+          <div
+            className="w-full px-3 py-2 shadow-lg border-b border-white/20 text-white flex items-center justify-between gap-2 backdrop-blur-md"
+            style={{ backgroundColor: activeBrand.darkHex }}
+            data-testid="checkout-mobile-sticky-bar"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-mono text-xs font-extrabold truncate">
+                {activeOption.number}
+              </span>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-white/15 shrink-0">
+                {PAYMENT_ACTION_LABELS_BN[activeActionType]}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-xs font-extrabold tabular-nums">
+                {formattedAmount}
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleCopyNumber(activeOption.number)}
+                aria-label="নম্বর কপি করুন"
+                className="p-1.5 rounded-lg bg-white text-slate-900 text-[11px] font-bold"
+              >
+                {copiedNumber ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div
+        className={
+          embedded
+            ? 'flex-1 flex flex-col justify-between py-4 px-3 sm:py-5 sm:px-4'
+            : 'flex-1 flex flex-col justify-between py-4 px-3 sm:py-8 sm:px-6'
+        }
+      >
+        <div className="w-full max-w-[840px] mx-auto space-y-3.5">
         {/* TEST / Preview Mode Banner — clearly separated from real transactions */}
         {isTestSession && (
           <div
-            className="rounded-2xl bg-amber-50 border border-amber-300 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-amber-950"
+            className="rounded-2xl bg-orange-50 border border-orange-300 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-orange-950"
             data-testid="checkout-preview-banner"
           >
             <div className="flex items-center gap-2 text-xs font-bold">
-              <FlaskConical className="w-4 h-4 text-amber-700 shrink-0" />
-              <span>প্রিভিউ · TEST মোড — কোনো আসল লেনদেন তৈরি হচ্ছে না</span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-orange-600 text-white text-[11px] font-extrabold tracking-wide">
+                TEST
+              </span>
+              <FlaskConical className="w-4 h-4 text-orange-700 shrink-0" />
+              <span>
+                {isPreview
+                  ? 'টেস্ট মোড — প্রিভিউ (কোনো আসল লেনদেন তৈরি হচ্ছে না)'
+                  : 'টেস্ট মোড — এটি একটি টেস্ট সেশন; আসল পেমেন্ট বা প্রোডাকশন ওয়েববুক চলবে না'}
+              </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {isPreview && (
@@ -629,12 +785,15 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                   </h2>
 
                   {enabledOptions.length === 0 ? (
-                    <div className="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-2">
+                    <div
+                      className="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-2"
+                      data-testid="checkout-no-methods"
+                    >
                       <div className="text-sm font-bold text-slate-800">
                         কোনো সক্রিয় পেমেন্ট মাধ্যম পাওয়া যায়নি
                       </div>
                       <p className="text-xs text-slate-500">
-                        এই স্টোরে এখনো bKash, Nagad বা Rocket নম্বর চালু করা হয়নি।
+                        এই স্টোরে এখনো কোনো সক্রিয় পেমেন্ট মাধ্যম চালু করা হয়নি।
                       </p>
                     </div>
                   ) : (
@@ -650,7 +809,7 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                             className="group w-full min-h-[76px] p-4 rounded-2xl bg-white border-2 border-slate-200/90 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900 transition-all flex items-center justify-between gap-4 text-left shadow-2xs hover:shadow-sm"
                           >
                             <div className="flex items-center gap-3.5 min-w-0">
-                              <PaymentMethodMark method={option.method} className="w-11 h-11 shrink-0" />
+                              <PaymentLogo method={option.method} size="md" />
                               <div className="min-w-0">
                                 <div className="flex items-center gap-2">
                                   <span
@@ -663,7 +822,13 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                                     ({brand.nameBn})
                                   </span>
                                 </div>
-                                <div className="text-xs text-slate-500 font-medium mt-0.5 truncate">
+                                <div
+                                  className="text-xs font-mono font-semibold text-slate-700 mt-0.5 truncate"
+                                  data-testid={`method-card-number-${option.method}`}
+                                >
+                                  নম্বর: {option.number}
+                                </div>
+                                <div className="text-[11px] text-slate-500 font-medium truncate">
                                   {formatAccountTypeHintBn(option.type, option.accountCount)}
                                 </div>
                               </div>
@@ -691,6 +856,20 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                 </div>
               )}
 
+              {/* Fallback if method step entered while activeOption is unavailable */}
+              {effectiveStep === 'method' && (!activeOption || !activeBrand) && (
+                <div className="p-6 sm:p-8" data-testid="checkout-no-methods">
+                  <div className="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-2">
+                    <div className="text-sm font-bold text-slate-800">
+                      কোনো সক্রিয় পেমেন্ট মাধ্যম পাওয়া যায়নি
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      এই স্টোরে এখনো কোনো সক্রিয় পেমেন্ট মাধ্যম চালু করা হয়নি।
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* ─── STEP 2: BRANDED METHOD SCREEN ───────────────────────── */}
               {effectiveStep === 'method' && activeOption && activeBrand && (
                 <div
@@ -700,16 +879,18 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                   }}
                   data-testid={`checkout-step-method-${activeOption.method}`}
                 >
+
                   {/* Brand Top Strip */}
                   <div className="px-5 pt-5 pb-4 sm:px-7 sm:pt-6 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
-                      <PaymentMethodMark method={activeOption.method} inverted className="w-10 h-10 shrink-0" />
+                      <PaymentLogo method={activeOption.method} size="lg" className="border-white/40 shadow-sm" />
                       <div>
                         <div className="text-lg font-extrabold tracking-tight leading-tight">
                           {activeBrand.name}
                         </div>
                         <div className="text-xs font-semibold text-white/85">
-                          {formatAccountTypeLabel(activeOption.type)} অ্যাকাউন্ট
+                          {formatAccountTypeLabel(activeOption.type)} অ্যাকাউন্ট ·{' '}
+                          {PAYMENT_ACTION_LABELS_BN[activeActionType]}
                         </div>
                       </div>
                     </div>
@@ -729,7 +910,10 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
 
                   {/* Prominent Receiving Number & Exact Payable Line */}
                   <div className="px-5 pb-5 sm:px-7 space-y-4">
-                    <div className="rounded-2xl bg-black/20 border border-white/20 p-4 space-y-3">
+                    <div
+                      ref={receiverCardRef}
+                      className="rounded-2xl bg-black/20 border border-white/20 p-4 space-y-3"
+                    >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
                           <div className="text-[11px] font-semibold text-white/80">
@@ -763,24 +947,68 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                         </button>
                       </div>
 
-                      <div className="pt-2.5 border-t border-white/15 text-sm sm:text-base font-bold text-white">
-                        {activeOption.type === 'agent'
-                          ? `এই নম্বরে ${formattedAmount} ক্যাশ আউট করুন`
-                          : `এই নম্বরে ${formattedAmount} সেন্ড মানি করুন`}
+                      <div className="pt-2.5 border-t border-white/15 flex flex-wrap items-center justify-between gap-2">
+                        <div
+                          className="text-sm sm:text-base font-bold text-white"
+                          data-testid="checkout-action-headline"
+                        >
+                          {buildActionHeadlineBn(activeActionType, formattedAmount)}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void handleCopyAmount(copyableAmount)}
+                          data-testid="checkout-copy-amount"
+                          className="inline-flex items-center gap-1.5 min-h-[34px] px-3 py-1 rounded-lg bg-white/15 hover:bg-white/25 border border-white/25 text-white text-xs font-bold transition-colors"
+                        >
+                          {copiedAmount ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-200" />
+                              <span>টাকা কপি হয়েছে</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>পরিমাণ কপি ({formattedAmount})</span>
+                            </>
+                          )}
+                        </button>
                       </div>
                     </div>
 
-                    {/* Short Numbered Bangla Instructions */}
-                    <ol className="space-y-2 text-xs sm:text-[13px] text-white/95">
-                      {activeBrand.stepsBn(activeOption.type, formattedAmount).map((line, idx) => (
-                        <li key={idx} className="flex items-start gap-2.5 leading-relaxed">
-                          <span className="w-5 h-5 rounded-full bg-white/20 text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                            {toBanglaDigits(idx + 1)}
-                          </span>
-                          <span>{line}</span>
-                        </li>
-                      ))}
-                    </ol>
+                    {/* Payment Instructions: Custom OR Automatic Numbered Bangla Steps (Never Both) */}
+                    {customInstructionLines.length > 0 ? (
+                      <div
+                        className="rounded-xl bg-black/15 border border-white/15 px-3.5 py-3 text-xs sm:text-[13px] text-white/95 space-y-1.5 leading-relaxed whitespace-pre-line"
+                        data-testid="checkout-custom-instructions"
+                      >
+                        {customInstructionLines.map((line, idx) => (
+                          <div key={idx}>{line}</div>
+                        ))}
+                      </div>
+                    ) : (
+                      <ol
+                        className="space-y-2 text-xs sm:text-[13px] text-white/95"
+                        data-testid="checkout-auto-steps"
+                      >
+                        {autoActionSteps.map((line, idx) => (
+                          <li key={idx} className="flex items-start gap-2.5 leading-relaxed">
+                            <span className="w-5 h-5 rounded-full bg-white/20 text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                              {toBanglaDigits(idx + 1)}
+                            </span>
+                            <span>{line}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+
+                    {/* Soft Warning Re-check Line */}
+                    <p
+                      className="text-xs font-semibold text-amber-200 bg-amber-950/35 border border-amber-200/30 rounded-xl px-3 py-2 flex items-center gap-2"
+                      data-testid="checkout-number-warning"
+                    >
+                      <AlertCircle className="w-4 h-4 shrink-0 text-amber-200" />
+                      <span>টাকা পাঠানোর আগে নাম্বারটি ভালো করে মিলিয়ে নিন</span>
+                    </p>
 
                     {/* Clean High-Contrast Verification Form Surface */}
                     <form
@@ -817,8 +1045,8 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                         {trxError ? (
                           <p className="text-xs font-semibold text-rose-600">{trxError}</p>
                         ) : (
-                          <p className="text-[11px] text-slate-500">
-                            পেমেন্টের পর SMS বা অ্যাপে পাওয়া ৮–১৬ অক্ষরের Transaction ID লিখুন।
+                          <p className="text-[11px] text-slate-500" data-testid="checkout-trx-hint">
+                            {buildTrxIdHintBn(activeActionType)}
                           </p>
                         )}
                       </div>
@@ -900,10 +1128,13 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
 
                   {(activeBrand || submittedTrxId) && (
                     <div className="max-w-xs mx-auto rounded-2xl bg-slate-50 border border-slate-200/80 p-3.5 text-xs space-y-1.5">
-                      {activeBrand && (
+                      {activeBrand && activeOption && (
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-slate-500">মাধ্যম</span>
-                          <span className="font-bold text-slate-800">{activeBrand.name}</span>
+                          <span className="inline-flex items-center gap-2 font-bold text-slate-800">
+                            <PaymentLogo method={activeOption.method} size="sm" />
+                            <span>{activeBrand.name}</span>
+                          </span>
                         </div>
                       )}
                       {submittedTrxId && (
@@ -939,11 +1170,25 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                   </div>
 
                   <div className="space-y-1.5">
+                    {isTestSession && (
+                      <div className="flex justify-center pb-1">
+                        <span
+                          className="inline-flex items-center px-3 py-1 rounded-md bg-orange-100 text-orange-800 border border-orange-300 text-xs font-extrabold tracking-wide"
+                          data-testid="checkout-paid-test-badge"
+                        >
+                          {sessionData?.testResult === 'verified_simulated' || sessionData?.simulated
+                            ? 'TEST · সিমুলেশনে যাচাই হয়েছে'
+                            : 'TEST · টেস্ট যাচাই'}
+                        </span>
+                      </div>
+                    )}
                     <h2 className="text-xl sm:text-2xl font-extrabold text-emerald-950">
                       পেমেন্ট সফল হয়েছে
                     </h2>
                     <p className="text-sm text-emerald-800">
-                      {storeName}-এ আপনার পেমেন্ট স্বয়ংক্রিয়ভাবে নিশ্চিত হয়েছে।
+                      {isTestSession
+                        ? `${storeName}-এর টেস্ট যাচাই সম্পন্ন হয়েছে (প্রোডাকশন ওয়েববুক চালানো হয়নি)।`
+                        : `${storeName}-এ আপনার পেমেন্ট স্বয়ংক্রিয়ভাবে নিশ্চিত হয়েছে।`}
                     </p>
                   </div>
 
@@ -954,10 +1199,13 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
                         {formattedAmount}
                       </span>
                     </div>
-                    {activeBrand && (
+                    {activeBrand && activeOption && (
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-slate-500 text-xs">মাধ্যম</span>
-                        <span className="font-bold text-slate-800">{activeBrand.name}</span>
+                        <span className="inline-flex items-center gap-2 font-bold text-slate-800">
+                          <PaymentLogo method={activeOption.method} size="sm" />
+                          <span>{activeBrand.name}</span>
+                        </span>
                       </div>
                     )}
                     {(submittedTrxId || sessionData?.trxId) && (
@@ -1126,15 +1374,16 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
             </section>
           </div>
         </div>
-      </div>
+        </div>
 
-      {/* Quiet Footer — Merchant Branding Always Dominates */}
-      <footer className="mt-6 text-center">
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400">
-          <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
-          Secured by PayVerify
-        </span>
-      </footer>
+        {/* Quiet Footer — Merchant Branding Always Dominates */}
+        <footer className="mt-6 text-center">
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400">
+            <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
+            Secured by PayVerify
+          </span>
+        </footer>
+      </div>
     </div>
   );
 };

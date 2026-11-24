@@ -134,6 +134,7 @@ export function computeDashboardMetrics(
   let waitingCount = 0;
 
   for (const s of sessions) {
+    if (s.isTest) continue;
     if (s.status === 'paid') {
       const paidTime = s.paidAtMs ?? s.createdAtMs;
       if (paidTime >= startMs && paidTime < endMs) {
@@ -145,7 +146,9 @@ export function computeDashboardMetrics(
     }
   }
 
-  const unmatchedSmsCount = smsList.filter((m) => m.matchResult === 'unmatched').length;
+  const unmatchedSmsCount = smsList.filter(
+    (m) => !m.simulated && m.matchResult === 'unmatched'
+  ).length;
 
   return {
     todayTotalPaisa,
@@ -164,6 +167,7 @@ export interface DailyPaidBucket {
 
 /**
  * Aggregates paid session amounts across the last 7 local calendar days for the Overview bar chart.
+ * Strictly excludes test sessions (isTest === true).
  */
 export function computeLast7DaysPaid(sessions: PaySessionDoc[], nowMs: number): DailyPaidBucket[] {
   const base = new Date(nowMs);
@@ -181,7 +185,7 @@ export function computeLast7DaysPaid(sessions: PaySessionDoc[], nowMs: number): 
   }
 
   for (const s of sessions) {
-    if (s.status !== 'paid') continue;
+    if (s.isTest || s.status !== 'paid') continue;
     const paidMs = s.paidAtMs ?? s.createdAtMs;
     const d = new Date(paidMs);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

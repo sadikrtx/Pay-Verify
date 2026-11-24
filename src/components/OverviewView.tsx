@@ -33,9 +33,13 @@ export type OverviewTargetTab =
 
 interface OverviewViewProps {
   onNavigate: (tab: OverviewTargetTab) => void;
+  onStartTestVerification?: () => void;
 }
 
-export const OverviewView: React.FC<OverviewViewProps> = ({ onNavigate }) => {
+export const OverviewView: React.FC<OverviewViewProps> = ({
+  onNavigate,
+  onStartTestVerification,
+}) => {
   const {
     selectedStore,
     storeSessions,
@@ -90,7 +94,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({ onNavigate }) => {
   );
 
   const hasConfirmedTest = useMemo(
-    () => storeSessions.some((s) => s.status === 'paid'),
+    () =>
+      storeSessions.some(
+        (s) =>
+          s.status === 'paid' ||
+          s.testResult === 'verified' ||
+          s.testResult === 'verified_simulated'
+      ),
     [storeSessions]
   );
 
@@ -160,14 +170,26 @@ export const OverviewView: React.FC<OverviewViewProps> = ({ onNavigate }) => {
 
                 {!step.done && (
                   <div className="flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onNavigate(step.targetTab)}
-                      className="text-xs font-semibold text-teal-700 hover:text-teal-900 inline-flex items-center gap-1"
-                    >
-                      সেট করুন
-                      <ArrowUpRight className="w-3.5 h-3.5" />
-                    </button>
+                    {step.id === 'test_payment' && onStartTestVerification ? (
+                      <button
+                        type="button"
+                        onClick={onStartTestVerification}
+                        data-testid="checklist-test-verify-btn"
+                        className="text-xs font-bold text-orange-700 hover:text-orange-900 inline-flex items-center gap-1"
+                      >
+                        টেস্ট যাচাই
+                        <ArrowUpRight className="w-3.5 h-3.5" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate(step.targetTab)}
+                        className="text-xs font-semibold text-teal-700 hover:text-teal-900 inline-flex items-center gap-1"
+                      >
+                        সেট করুন
+                        <ArrowUpRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     {step.id === 'live' &&
                       hasConfirmedTest &&
                       selectedStorePermissions.canEditSettings && (

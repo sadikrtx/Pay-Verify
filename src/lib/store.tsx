@@ -64,9 +64,19 @@ import {
 } from './migration';
 import {
   cacheWorkerConfigLocally,
+  createTestWorkerSession,
   createWorkerSession,
   normalizeWorkerBaseUrl,
+  redeemSubscriptionClaimToken,
+  submitSmsIngestWithSimulation,
 } from './workerClient';
+import {
+  evaluateSmsAgainstSession,
+  generateSampleWalletSms,
+  getStoreEnabledMethodOptions,
+  TEST_SESSION_TTL_MS,
+  type GeneratedSampleWalletSms,
+} from './testVerification';
 import {
   DEFAULT_PLATFORM_CONFIG,
   mapAccount,
@@ -82,7 +92,9 @@ import {
   mapSession,
   mapSms,
   mapStore,
+  mapSubscriptionPurchase,
 } from './storeMappers';
+import { normalizeLandingConfig } from './landingConfig';
 import {
   DEFAULT_STORE_ACCENT,
   isSuperAdminEmail,
@@ -91,6 +103,7 @@ import {
   SUPER_ADMIN_EMAIL,
   TRIAL_DURATION_MS,
   type AddonKind,
+  type LandingPageConfig,
   type PairingTokenDoc,
   type PayAccountDoc,
   type PayActivityDoc,
@@ -99,23 +112,32 @@ import {
   type PayCouponDoc,
   type PayDeviceDoc,
   type PaymentAccountsMap,
+  type NormalizedPaymentAccountsMap,
   type PayPlanDoc,
   type PayPlanFeatures,
   type PayPlatformConfig,
   type PaySessionDoc,
   type PaySmsDoc,
   type PayStoreDoc,
+  type PaySubscriptionPurchaseDoc,
   type PlanStatus,
   type StoreMemberRole,
   type StoreType,
+  type TestVerificationType,
   type WalletEnabledMap,
   type WalletMethod,
   type WalletNumbersMap,
   type WorkerCreateSessionResponse,
 } from '../types/payment';
 import {
+  buildEmptyEnabledMap,
+  buildEmptyPaymentAccounts,
   CHECKOUT_METHODS,
+  enforceEnabledRequiresSavedNumber,
   isValidLogoDataUrl,
+  normalizePaymentAccounts,
+  normalizePaymentActionType,
+  sanitizeCustomInstruction,
   syncLegacyNumbersFromAccounts,
 } from './checkoutFlow';
 
@@ -209,22 +231,40 @@ interface PayVerifyContextValue {
   allSessions: PaySessionDoc[];
   allDevices: PayDeviceDoc[];
   activityLog: PayActivityDoc[];
+  subscriptionPurchases: PaySubscriptionPurchaseDoc[];
   // Auth & Security
-  signInWithGoogle: () => Promise<void>;
-  signInWithEmail: (email: string, password: string) => Promise<void>;
+  signInWithGoogle: (portal?: 'buyer' | 'admin') => Promise<void>;
+  signInWithEmail: (
+    email: string,
+    password: string,
+    portal?: 'buyer' | 'admin'
+  ) => Promise<void>;
   signUpWithEmail: (email: string, password: string, displayName: string) => Promise<void>;
+  signUpFunnelAccount: (input: {
+    email: string;
+    password: string;
+    displayName: string;
+    mode: 'paid' | 'trial';
+    purchaseId?: string;
+    claimToken?: string;
+  }) => Promise<{ email: string; planName: string }>;
   reauthenticateUser: (password?: string) => Promise<void>;
   signOutUser: () => Promise<void>;
   signOutAllSessions: () => Promise<{ localSignedOut: boolean; workerRevocationPending: boolean }>;
   markChangelogRead: () => Promise<void>;
   // Stores
   createStore: (name: string) => Promise<{ store: PayStoreDoc; rawStoreKey: string }>;
+  saveStorePaymentMethods: (
+    storeId: string,
+    paymentAccounts: PaymentAccountsMap,
+    numberEnabled: WalletEnabledMap
+  ) => Promise<void>;
   saveStoreSettings: (
     storeId: string,
     input: {
       name: string;
-      numbers: WalletNumbersMap;
-      numberEnabled: WalletEnabledMap;
+      numbers?: WalletNumbersMap;
+      numberEnabled?: WalletEnabledMap;
       uniquePaisa: boolean;
       sessionMinutes: number;
       logoUrl: string;
@@ -240,8 +280,8 @@ interface PayVerifyContextValue {
       nameEn: string;
       logoUrl: string;
       logoDataUrl: string;
-      numberEnabled: { bkash: boolean; nagad: boolean; rocket: boolean };
-      paymentAccounts: PaymentAccountsMap;
+      numberEnabled?: WalletEnabledMap;
+      paymentAccounts?: PaymentAccountsMap;
     }
   ) => Promise<void>;
   rotateStoreKey: (storeId: string) => Promise<string>;
@@ -259,6 +299,19 @@ interface PayVerifyContextValue {
     successUrl?: string;
     failUrl?: string;
   }) => Promise<WorkerCreateSessionResponse>;
+  createTestVerificationSession: (input: {
+    storeId: string;
+    method: WalletMethod;
+    amountPaisa: number;
+    testType: TestVerificationType;
+  }) => Promise<PaySessionDoc>;
+  sendSimulatedTestSms: (sessionId: string) => Promise<{
+    session: PaySessionDoc;
+    sampleSms: GeneratedSampleWalletSms;
+    webhookFired: boolean;
+  }>;
+  testHistoryClearedBeforeMs: number;
+  clearTestHistory: () => void;
   cancelWaitingSession: (sessionId: string) => Promise<void>;
   manualConfirmSession: (sessionId: string, note: string) => Promise<void>;
   matchUnmatchedSmsToSession: (sms: PaySmsDoc, sessionId: string) => Promise<void>;
@@ -285,6 +338,11 @@ interface PayVerifyContextValue {
       workerBaseUrl?: string;
       trialPlanId?: string;
       subscriptionStoreId?: string | null;
+      brandLogoUrl?: string;
+      brandLogoDataUrl?: string;
+      supportWhatsApp?: string;
+      supportPhone?: string;
+      landing?: LandingPageConfig;
     },
     note: string
   ) => Promise<void>;
@@ -411,8 +469,50 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   });
 
-  const [ownedStores, setOwnedStores] = useState<PayStoreDoc[]>([]);
+  const [ownedStores, setOwnedStores] = useState<PayStoreDoc[]>(() => {
+    if (!isAutoTest || !account) return [];
+    return [
+      {
+        id: 'store_autotest_1',
+        accountId: account.id,
+        name: 'স্বপ্ন শপ',
+        nameEn: 'Shopno Shop',
+        type: 'customer',
+        numbers: {
+          bkash: '01711223344',
+          nagad: '01811223344',
+          rocket: '01911223344',
+          upay: '',
+        },
+        numberEnabled: {
+          bkash: true,
+          nagad: true,
+          rocket: true,
+          upay: false,
+        },
+        paymentAccounts: {
+          bkash: [{ number: '01711223344', type: 'personal', actionType: 'send_money', active: true }],
+          nagad: [{ number: '01811223344', type: 'personal', actionType: 'send_money', active: true }],
+          rocket: [{ number: '01911223344', type: 'agent', actionType: 'cash_out', active: true }],
+          upay: [],
+        },
+        uniquePaisa: false,
+        sessionMinutes: 15,
+        storeKeyHash: 'a'.repeat(64),
+        webhookUrl: 'https://shop.example.com/api/payverify-webhook',
+        webhookSecretSet: false,
+        lastWebhook: null,
+        logoUrl: '',
+        accentColor: DEFAULT_STORE_ACCENT,
+        memberRoles: {},
+        memberEmails: {},
+        memberUids: [],
+        createdAtMs: Date.now() - 86_400_000,
+      },
+    ];
+  });
   const [sharedStores, setSharedStores] = useState<PayStoreDoc[]>([]);
+  const [testHistoryClearedBeforeMs, setTestHistoryClearedBeforeMs] = useState<number>(0);
   const [selectedStoreId, setSelectedStoreIdState] = useState<string | null>(() => {
     try {
       return window.localStorage.getItem(SELECTED_STORE_KEY);
@@ -438,6 +538,10 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [allSessions, setAllSessions] = useState<PaySessionDoc[]>([]);
   const [allDevices, setAllDevices] = useState<PayDeviceDoc[]>([]);
   const [activityLog, setActivityLog] = useState<PayActivityDoc[]>([]);
+  const [subscriptionPurchases, setSubscriptionPurchases] = useState<PaySubscriptionPurchaseDoc[]>([]);
+
+  const funnelSignupInProgressRef = useRef(false);
+  const adminPortalCheckingRef = useRef(false);
 
   const setSelectedStoreId = useCallback((storeId: string) => {
     setSelectedStoreIdState(storeId);
@@ -448,7 +552,29 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, []);
 
-  // Public visible marketing plans listener (works even before sign-in so /plans works)
+  // Public platform config listener (works even before sign-in so Steps 1-5 get live brand, support, landing & workerBaseUrl)
+  useEffect(() => {
+    if (isAutoTest) return;
+    if (fbUser) return; // Authenticated listener below takes over
+    const unsub = onSnapshot(
+      doc(db, 'payPlatform', 'config'),
+      (snap) => {
+        if (snap.exists()) {
+          const mapped = mapPlatformConfig(snap.data());
+          setPlatformConfig(mapped);
+          if (mapped.workerBaseUrl) {
+            cacheWorkerConfigLocally(mapped.workerBaseUrl, '');
+          }
+        }
+      },
+      () => {
+        // Fallback cleanly to default landing config if doc not yet created
+      }
+    );
+    return unsub;
+  }, [isAutoTest, fbUser]);
+
+  // Public visible marketing plans listener (works even before sign-in so Step 1/2 & /pricing work)
   useEffect(() => {
     if (isAutoTest) return;
     if (fbUser) return; // Authenticated listener below takes over
@@ -472,6 +598,11 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => {
     if (isAutoTest) return;
     const unsub = onAuthStateChanged(auth, (u) => {
+      // During Step 4 account creation or /admin super-admin verification, hold auth transition
+      // so the buyer never skips Step 5 and a regular user never enters /admin.
+      if (u && (funnelSignupInProgressRef.current || adminPortalCheckingRef.current)) {
+        return;
+      }
       setFbUser(u);
       setAuthReady(true);
       if (!u) {
@@ -493,6 +624,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setAllSessions([]);
         setAllDevices([]);
         setActivityLog([]);
+        setSubscriptionPurchases([]);
         setAddons([]);
         setCoupons([]);
         setChangelog([]);
@@ -1046,7 +1178,27 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           () => {}
         );
 
-        unsubs.push(uAllAccounts, uAllStores, uAllSessions, uAllDevices, uActivity, uCoupons);
+        const uPurchases = onSnapshot(
+          collection(db, 'paySubscriptionPurchases'),
+          (snap) => {
+            setSubscriptionPurchases(
+              snap.docs
+                .map((d) => mapSubscriptionPurchase(d.id, d.data()))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs)
+            );
+          },
+          () => {}
+        );
+
+        unsubs.push(
+          uAllAccounts,
+          uAllStores,
+          uAllSessions,
+          uAllDevices,
+          uActivity,
+          uCoupons,
+          uPurchases
+        );
       }
     };
 
@@ -1213,17 +1365,67 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [account, changelog]);
 
   // ─── Auth & Security Mutations ─────────────────────────────────────────
-  const signInWithGoogle = useCallback(async () => {
-    if (isAutoTest) return;
-    await signInWithPopup(auth, googleProvider);
-  }, [isAutoTest]);
+  const verifyAdminPortalAuthorization = useCallback(async (signedInUser: User): Promise<void> => {
+    const emailLower = (signedInUser.email || '').trim().toLowerCase();
+    let authorized = isSuperAdminEmail(emailLower);
+    if (!authorized) {
+      try {
+        const accSnap = await getDoc(doc(db, 'payAccounts', signedInUser.uid));
+        if (accSnap.exists() && Boolean(accSnap.data().isSuperAdmin)) {
+          authorized = true;
+        }
+      } catch {
+        authorized = false;
+      }
+    }
+    if (!authorized) {
+      await signOut(auth).catch(() => {});
+      throw new Error('এই পোর্টালটি শুধু অ্যাডমিনের জন্য');
+    }
+  }, []);
+
+  const signInWithGoogle = useCallback(
+    async (portal: 'buyer' | 'admin' = 'buyer') => {
+      if (isAutoTest) return;
+      if (portal === 'admin') {
+        adminPortalCheckingRef.current = true;
+        try {
+          const cred = await signInWithPopup(auth, googleProvider);
+          await verifyAdminPortalAuthorization(cred.user);
+          adminPortalCheckingRef.current = false;
+          setFbUser(cred.user);
+          setAuthReady(true);
+        } catch (err) {
+          adminPortalCheckingRef.current = false;
+          throw err;
+        }
+        return;
+      }
+      await signInWithPopup(auth, googleProvider);
+    },
+    [isAutoTest, verifyAdminPortalAuthorization]
+  );
 
   const signInWithEmail = useCallback(
-    async (email: string, password: string) => {
+    async (email: string, password: string, portal: 'buyer' | 'admin' = 'buyer') => {
       if (isAutoTest) return;
+      if (portal === 'admin') {
+        adminPortalCheckingRef.current = true;
+        try {
+          const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+          await verifyAdminPortalAuthorization(cred.user);
+          adminPortalCheckingRef.current = false;
+          setFbUser(cred.user);
+          setAuthReady(true);
+        } catch (err) {
+          adminPortalCheckingRef.current = false;
+          throw err;
+        }
+        return;
+      }
       await signInWithEmailAndPassword(auth, email.trim(), password);
     },
-    [isAutoTest]
+    [isAutoTest, verifyAdminPortalAuthorization]
   );
 
   const signUpWithEmail = useCallback(
@@ -1236,6 +1438,127 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     },
     [isAutoTest]
+  );
+
+  /**
+   * Step 4 Funnel Account Creation:
+   * - Paid path: creates Firebase Auth user, redeems single-use server-issued claimToken via Worker
+   *   (Worker atomically activates paid plan & burns token), then signs out immediately so the buyer
+   *   always completes Step 5 (/login) with their new email.
+   * - Trial path: verifies trialPlanId is configured, creates Firebase Auth user & trial payAccounts/{uid},
+   *   then signs out immediately so the buyer completes Step 5 (/login).
+   */
+  const signUpFunnelAccount = useCallback(
+    async (input: {
+      email: string;
+      password: string;
+      displayName: string;
+      mode: 'paid' | 'trial';
+      purchaseId?: string;
+      claimToken?: string;
+    }): Promise<{ email: string; planName: string }> => {
+      const cleanEmail = input.email.trim().toLowerCase();
+      const cleanName = (input.displayName || cleanEmail.split('@')[0] || 'মার্চেন্ট')
+        .trim()
+        .slice(0, 80);
+
+      if (input.mode === 'trial') {
+        const trialId = (platformConfig.trialPlanId || '').trim();
+        const trialPlan = trialId ? plans.find((p) => p.id === trialId && !p.archived) : null;
+        if (!trialPlan) {
+          throw new Error('বর্তমানে ফ্রি ট্রায়াল চালু নেই। অনুগ্রহ করে একটি প্যাকেজ বেছে নিন।');
+        }
+        if (isAutoTest) {
+          return { email: cleanEmail, planName: trialPlan.name };
+        }
+
+        funnelSignupInProgressRef.current = true;
+        try {
+          const cred = await createUserWithEmailAndPassword(auth, cleanEmail, input.password);
+          try {
+            if (cleanName) {
+              await updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
+            }
+            const trialEnd = Timestamp.fromMillis(Date.now() + TRIAL_DURATION_MS);
+            await setDoc(doc(db, 'payAccounts', cred.user.uid), {
+              email: cleanEmail,
+              displayName: cleanName,
+              isSuperAdmin: false,
+              planStatus: 'trial',
+              planTier: 'basic',
+              planId: trialPlan.id,
+              trialEndsAt: trialEnd,
+              paidUntil: null,
+              dailySessionCap: trialPlan.dailySessionCap || 200,
+              dailySessionCapOverride: null,
+              storeLimitOverride: null,
+              ownedAddons: [],
+              lastChangelogReadAt: null,
+              tokensRevokedAt: null,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+            const dirHash = await hashEmailForDirectory(cleanEmail);
+            await setDoc(doc(db, 'payDirectory', dirHash), {
+              accountId: cred.user.uid,
+              displayName: cleanName,
+            }).catch(() => {});
+          } catch (setupErr) {
+            await cred.user.delete().catch(() => {});
+            throw setupErr;
+          } finally {
+            await signOut(auth).catch(() => {});
+          }
+          return { email: cleanEmail, planName: trialPlan.name };
+        } finally {
+          funnelSignupInProgressRef.current = false;
+        }
+      }
+
+      // Paid path: strictly requires Worker + purchaseId + single-use server-issued claimToken
+      const workerBase = normalizeWorkerBaseUrl(platformConfig.workerBaseUrl);
+      if (!workerBase) {
+        throw new Error('পেমেন্ট সার্ভার (Worker URL) কনফিগার করা হয়নি।');
+      }
+      if (!input.purchaseId || !input.claimToken) {
+        throw new Error('এই লিংকটি আর ব্যবহার করা যাবে না');
+      }
+      if (isAutoTest) {
+        return { email: cleanEmail, planName: 'প্যাকেজ' };
+      }
+
+      funnelSignupInProgressRef.current = true;
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, cleanEmail, input.password);
+        try {
+          if (cleanName) {
+            await updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
+          }
+          const idToken = await cred.user.getIdToken();
+          const claimed = await redeemSubscriptionClaimToken(workerBase, idToken, {
+            purchaseId: input.purchaseId,
+            claimToken: input.claimToken,
+            displayName: cleanName,
+          });
+          const dirHash = await hashEmailForDirectory(cleanEmail);
+          await setDoc(doc(db, 'payDirectory', dirHash), {
+            accountId: cred.user.uid,
+            displayName: cleanName,
+          }).catch(() => {});
+          return { email: cleanEmail, planName: claimed.planName };
+        } catch (claimErr) {
+          // If server-side claim fails (token expired/already used), delete freshly created auth user
+          await cred.user.delete().catch(() => {});
+          throw claimErr;
+        } finally {
+          // NEVER auto-login after Step 4; buyer proceeds cleanly to Step 5 (/login)
+          await signOut(auth).catch(() => {});
+        }
+      } finally {
+        funnelSignupInProgressRef.current = false;
+      }
+    },
+    [isAutoTest, platformConfig.trialPlanId, platformConfig.workerBaseUrl, plans]
   );
 
   const reauthenticateUser = useCallback(
@@ -1320,13 +1643,16 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const storeType: StoreType = account.isSuperAdmin ? 'own' : 'customer';
       const nowMs = Date.now();
 
+      const emptyAccounts = buildEmptyPaymentAccounts();
+      const emptyEnabled = buildEmptyEnabledMap();
       const newStore: PayStoreDoc = {
         id,
         accountId: account.id,
         name,
         type: storeType,
         numbers: { bkash: '', nagad: '', rocket: '', upay: '' },
-        numberEnabled: { bkash: true, nagad: true, rocket: true, upay: true },
+        numberEnabled: emptyEnabled,
+        paymentAccounts: emptyAccounts,
         uniquePaisa: false,
         sessionMinutes: 15,
         storeKeyHash: keyHash,
@@ -1356,6 +1682,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           type: storeType,
           numbers: newStore.numbers,
           numberEnabled: newStore.numberEnabled,
+          paymentAccounts: emptyAccounts,
           uniquePaisa: false,
           sessionMinutes: 15,
           storeKeyHash: keyHash,
@@ -1381,13 +1708,63 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [activeUser, account, effectivePlan, ownedStores.length, isAutoTest, setSelectedStoreId]
   );
 
+  const saveStorePaymentMethods = useCallback(
+    async (
+      storeId: string,
+      rawPaymentAccounts: PaymentAccountsMap,
+      rawNumberEnabled: WalletEnabledMap
+    ) => {
+      if (!activeUser || !account) throw new Error('সাইন ইন করুন।');
+      if (pausedStoreIds.has(storeId)) {
+        throw new Error('এই স্টোরটি প্ল্যান লিমিটের বাইরে থাকায় পজ করা আছে — পরিবর্তন করা যাবে না।');
+      }
+      const target = accessibleStores.find((s) => s.id === storeId);
+      const perms = getStorePermissions(target || null, account);
+      if (!target || !perms.canEditSettings) {
+        throw new Error('এই স্টোরের পেমেন্ট মাধ্যম পরিবর্তন করার অনুমতি আপনার নেই।');
+      }
+
+      const cleanedAccounts: NormalizedPaymentAccountsMap = normalizePaymentAccounts(rawPaymentAccounts);
+      const nextEnabled = enforceEnabledRequiresSavedNumber(rawNumberEnabled, cleanedAccounts);
+      const syncedNumbers = syncLegacyNumbersFromAccounts(cleanedAccounts);
+
+      if (isAutoTest) {
+        const applyLocal = (s: PayStoreDoc): PayStoreDoc =>
+          s.id === storeId
+            ? {
+                ...s,
+                paymentAccounts: cleanedAccounts,
+                numbers: syncedNumbers,
+                numberEnabled: nextEnabled,
+              }
+            : s;
+        setOwnedStores((prev) => prev.map(applyLocal));
+        setSharedStores((prev) => prev.map(applyLocal));
+        setAllStores((prev) => prev.map(applyLocal));
+        return;
+      }
+
+      try {
+        await updateDoc(doc(db, 'payStores', storeId), {
+          paymentAccounts: cleanedAccounts,
+          numbers: syncedNumbers,
+          numberEnabled: nextEnabled,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `payStores/${storeId}`);
+      }
+    },
+    [activeUser, account, accessibleStores, pausedStoreIds, isAutoTest]
+  );
+
   const saveStoreSettings = useCallback(
     async (
       storeId: string,
       input: {
         name: string;
-        numbers: WalletNumbersMap;
-        numberEnabled: WalletEnabledMap;
+        numbers?: WalletNumbersMap;
+        numberEnabled?: WalletEnabledMap;
         uniquePaisa: boolean;
         sessionMinutes: number;
         logoUrl: string;
@@ -1409,19 +1786,13 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const name = input.name.trim().slice(0, 80);
       if (!name) throw new Error('স্টোরের নাম লিখুন।');
 
-      const cleanedNumbers: WalletNumbersMap = { bkash: '', nagad: '', rocket: '', upay: '' };
-      for (const key of ['bkash', 'nagad', 'rocket', 'upay'] as WalletMethod[]) {
-        const raw = input.numbers[key].trim();
-        if (!raw) {
-          cleanedNumbers[key] = '';
-        } else {
-          const norm = normalizeBdPhone(raw);
-          if (!norm) {
-            throw new Error(`${key} নম্বরটি সঠিক ১১ ডিজিটের বাংলাদেশি নম্বর হতে হবে (01XXXXXXXXX)।`);
-          }
-          cleanedNumbers[key] = norm;
-        }
-      }
+      // Single source of truth: keep canonical paymentAccounts untouched unless updating store general/branding/webhook
+      const canonicalAccounts = normalizePaymentAccounts(target.paymentAccounts, target.numbers);
+      const syncedNumbers = syncLegacyNumbersFromAccounts(canonicalAccounts);
+      const syncedEnabled = enforceEnabledRequiresSavedNumber(
+        input.numberEnabled ?? target.numberEnabled,
+        canonicalAccounts
+      );
 
       const sessionMinutes = Math.min(120, Math.max(5, Math.trunc(Number(input.sessionMinutes) || 15)));
       const logoUrl = input.logoUrl.trim().slice(0, 512);
@@ -1439,8 +1810,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const newSecretTrimmed = (input.webhookSecret || '').trim();
       const patch: Record<string, unknown> = {
         name,
-        numbers: cleanedNumbers,
-        numberEnabled: input.numberEnabled,
+        paymentAccounts: canonicalAccounts,
+        numbers: syncedNumbers,
+        numberEnabled: syncedEnabled,
         uniquePaisa: Boolean(input.uniquePaisa),
         sessionMinutes,
         logoUrl,
@@ -1458,8 +1830,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             ? {
                 ...s,
                 name,
-                numbers: cleanedNumbers,
-                numberEnabled: input.numberEnabled,
+                paymentAccounts: canonicalAccounts,
+                numbers: syncedNumbers,
+                numberEnabled: syncedEnabled,
                 uniquePaisa: Boolean(input.uniquePaisa),
                 sessionMinutes,
                 logoUrl,
@@ -1494,8 +1867,8 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         nameEn: string;
         logoUrl: string;
         logoDataUrl: string;
-        numberEnabled: { bkash: boolean; nagad: boolean; rocket: boolean };
-        paymentAccounts: PaymentAccountsMap;
+        numberEnabled?: WalletEnabledMap;
+        paymentAccounts?: PaymentAccountsMap;
       }
     ) => {
       if (!activeUser || !account) throw new Error('সাইন ইন করুন।');
@@ -1521,39 +1894,49 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         throw new Error('আপলোড করা লোগো ফাইলটি সঠিক নয় বা আকার অনেক বড়।');
       }
 
-      const cleanedAccounts: PaymentAccountsMap = { bkash: [], nagad: [], rocket: [] };
-      for (const method of CHECKOUT_METHODS) {
-        const rawList = Array.isArray(input.paymentAccounts[method])
-          ? input.paymentAccounts[method]
-          : [];
-        const seen = new Set<string>();
-        for (const item of rawList) {
-          const trimmed = (item.number || '').trim();
-          if (!trimmed) continue;
-          const norm = normalizeBdPhone(trimmed);
-          if (!norm) {
-            throw new Error(
-              `${method.toUpperCase()} নম্বর "${trimmed}" সঠিক ১১ ডিজিটের বাংলাদেশি নম্বর হতে হবে (01XXXXXXXXX)।`
-            );
+      const cleanedAccounts = buildEmptyPaymentAccounts();
+      if (input.paymentAccounts) {
+        for (const method of CHECKOUT_METHODS) {
+          const rawList = Array.isArray(input.paymentAccounts[method])
+            ? input.paymentAccounts[method]!
+            : [];
+          const seen = new Set<string>();
+          for (const item of rawList) {
+            const trimmed = (item.number || '').trim();
+            if (!trimmed) continue;
+            const norm = normalizeBdPhone(trimmed);
+            if (!norm) {
+              throw new Error(
+                `${method.toUpperCase()} নম্বর "${trimmed}" সঠিক ১১ ডিজিটের বাংলাদেশি নম্বর হতে হবে (01XXXXXXXXX)।`
+              );
+            }
+            if (seen.has(norm)) continue;
+            seen.add(norm);
+            const entryType = item.type === 'agent' ? 'agent' : 'personal';
+            const actionType = normalizePaymentActionType(item.actionType, entryType);
+            const customInstruction = sanitizeCustomInstruction(item.customInstruction);
+            cleanedAccounts[method].push({
+              number: norm,
+              type: entryType,
+              actionType,
+              ...(customInstruction ? { customInstruction } : {}),
+              active: Boolean(item.active),
+            });
+            if (cleanedAccounts[method].length >= 10) break;
           }
-          if (seen.has(norm)) continue;
-          seen.add(norm);
-          cleanedAccounts[method].push({
-            number: norm,
-            type: item.type === 'agent' ? 'agent' : 'personal',
-            active: Boolean(item.active),
-          });
-          if (cleanedAccounts[method].length >= 10) break;
+        }
+      } else {
+        const existingNorm = normalizePaymentAccounts(target.paymentAccounts, target.numbers);
+        for (const method of CHECKOUT_METHODS) {
+          cleanedAccounts[method] = existingNorm[method];
         }
       }
 
-      const nextEnabled: WalletEnabledMap = {
-        bkash: Boolean(input.numberEnabled.bkash),
-        nagad: Boolean(input.numberEnabled.nagad),
-        rocket: Boolean(input.numberEnabled.rocket),
-        upay: Boolean(target.numberEnabled.upay),
-      };
-      const syncedNumbers = syncLegacyNumbersFromAccounts(cleanedAccounts, target.numbers.upay);
+      const nextEnabled = enforceEnabledRequiresSavedNumber(
+        input.numberEnabled ?? target.numberEnabled,
+        cleanedAccounts
+      );
+      const syncedNumbers = syncLegacyNumbersFromAccounts(cleanedAccounts);
 
       const enabledNames = CHECKOUT_METHODS.filter(
         (m) => nextEnabled[m] && cleanedAccounts[m].some((e) => e.active)
@@ -2000,6 +2383,379 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [activeUser, isAutoTest]
   );
 
+  useEffect(() => {
+    if (!account) {
+      setTestHistoryClearedBeforeMs(0);
+      return;
+    }
+    try {
+      const saved = window.localStorage.getItem(`payverify_test_history_cleared_${account.id}`);
+      const parsed = saved ? Number(saved) : 0;
+      setTestHistoryClearedBeforeMs(Number.isFinite(parsed) && parsed > 0 ? parsed : 0);
+    } catch {
+      setTestHistoryClearedBeforeMs(0);
+    }
+  }, [account]);
+
+  const clearTestHistory = useCallback(() => {
+    const now = Date.now();
+    setTestHistoryClearedBeforeMs(now);
+    if (account) {
+      try {
+        window.localStorage.setItem(`payverify_test_history_cleared_${account.id}`, String(now));
+      } catch {
+        // Ignore
+      }
+    }
+  }, [account]);
+
+  const createTestVerificationSession = useCallback(
+    async (input: {
+      storeId: string;
+      method: WalletMethod;
+      amountPaisa: number;
+      testType: TestVerificationType;
+    }): Promise<PaySessionDoc> => {
+      if (!activeUser || !account) throw new Error('সাইন ইন করুন।');
+      const targetStore = accessibleStores.find((s) => s.id === input.storeId);
+      if (!targetStore) {
+        throw new Error('স্টোরটি খুঁজে পাওয়া যায়নি।');
+      }
+      const perms = getStorePermissions(targetStore, account);
+      if (!perms.canCreateSession && !perms.canEditSettings) {
+        throw new Error('এই স্টোরে টেস্ট যাচাই চালানোর অনুমতি নেই।');
+      }
+      if (pausedStoreIds.has(targetStore.id)) {
+        throw new Error('এই স্টোরটি প্ল্যান লিমিটের বাইরে থাকায় পজ করা আছে।');
+      }
+
+      const enabledOptions = getStoreEnabledMethodOptions(targetStore);
+      const chosenOption = enabledOptions.find((o) => o.method === input.method);
+      if (!chosenOption) {
+        throw new Error('নির্বাচিত মাধ্যমটি এই স্টোরে চালু নেই বা বৈধ নম্বর সেট করা হয়নি।');
+      }
+
+      const amountPaisa = Math.trunc(input.amountPaisa);
+      if (!Number.isInteger(amountPaisa) || amountPaisa < 100 || amountPaisa > 100_000_000) {
+        throw new Error('সঠিক টাকার পরিমাণ দিন (সর্বনিম্ন ৳১)।');
+      }
+
+      // Notice: Test sessions NEVER check or deduct dailySessionCap quota,
+      // expire fast (15 minutes), and NEVER fire the store's production webhook.
+      const nowMs = Date.now();
+      const expiresAtMs = nowMs + TEST_SESSION_TTL_MS;
+      const suffix = Math.random().toString(36).toUpperCase().slice(2, 6);
+      const orderId = `TEST-${suffix}-${String(nowMs).slice(-4)}`;
+
+      let sessionId = generateDocId('test');
+      let resolvedNumber = chosenOption.number;
+      let resolvedPayable = amountPaisa;
+      let resolvedExpiresAt = expiresAtMs;
+      let persistedByWorker = false;
+
+      if (!isAutoTest && fbUser && platformConfig.workerBaseUrl) {
+        const idToken = await fbUser.getIdToken();
+        const workerRes = await createTestWorkerSession(
+          platformConfig.workerBaseUrl,
+          idToken,
+          {
+            storeId: targetStore.id,
+            method: input.method,
+            amountPaisa,
+            testType: input.testType,
+          }
+        );
+        if (workerRes.supported && workerRes.session) {
+          sessionId = workerRes.session.sessionId || sessionId;
+          resolvedNumber = workerRes.session.number || resolvedNumber;
+          resolvedPayable = workerRes.session.payablePaisa || amountPaisa;
+          const workerExp = Number(workerRes.session.expiresAt);
+          if (Number.isFinite(workerExp) && workerExp > nowMs) {
+            resolvedExpiresAt = workerExp;
+          }
+          persistedByWorker = true;
+        }
+      }
+
+      const newSession: PaySessionDoc = {
+        id: sessionId,
+        accountId: targetStore.accountId,
+        storeId: targetStore.id,
+        orderId,
+        method: input.method,
+        number: resolvedNumber,
+        amountPaisa,
+        payablePaisa: resolvedPayable,
+        status: 'waiting',
+        trxId: null,
+        sender: null,
+        createdAtMs: nowMs,
+        expiresAtMs: resolvedExpiresAt,
+        paidAtMs: null,
+        source: 'kenax',
+        manual: false,
+        memberUids: targetStore.memberUids,
+        isTest: true,
+        testType: input.testType,
+        testResult: 'pending',
+        failureReason: null,
+        expectedAmountPaisa: resolvedPayable,
+        receivedAmountPaisa: null,
+        simulated: false,
+        webhookFired: false,
+      };
+
+      if (isAutoTest) {
+        setOwnedSessions((prev) => [newSession, ...prev]);
+        return newSession;
+      }
+
+      if (!persistedByWorker) {
+        try {
+          await setDoc(doc(db, 'paySessions', sessionId), {
+            accountId: targetStore.accountId,
+            storeId: targetStore.id,
+            orderId,
+            method: input.method,
+            number: resolvedNumber,
+            amountPaisa,
+            payablePaisa: resolvedPayable,
+            status: 'waiting',
+            trxId: null,
+            sender: null,
+            createdAt: Timestamp.fromMillis(nowMs),
+            expiresAt: Timestamp.fromMillis(resolvedExpiresAt),
+            paidAt: null,
+            source: 'kenax',
+            manual: false,
+            memberUids: targetStore.memberUids,
+            isTest: true,
+            testType: input.testType,
+            testResult: 'pending',
+            failureReason: null,
+            expectedAmountPaisa: resolvedPayable,
+            receivedAmountPaisa: null,
+            simulated: false,
+            webhookFired: false,
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, `paySessions/${sessionId}`);
+        }
+      }
+
+      return newSession;
+    },
+    [
+      activeUser,
+      account,
+      accessibleStores,
+      pausedStoreIds,
+      isAutoTest,
+      fbUser,
+      platformConfig.workerBaseUrl,
+    ]
+  );
+
+  const sendSimulatedTestSms = useCallback(
+    async (
+      sessionId: string
+    ): Promise<{
+      session: PaySessionDoc;
+      sampleSms: GeneratedSampleWalletSms;
+      webhookFired: boolean;
+    }> => {
+      if (!activeUser || !account) throw new Error('সাইন ইন করুন।');
+      const targetSession = accountSessions.find((s) => s.id === sessionId);
+      if (!targetSession) {
+        throw new Error('টেস্ট সেশনটি খুঁজে পাওয়া যায়নি।');
+      }
+      // Hard client + server guard: simulated SMS can ONLY verify isTest === true sessions
+      if (targetSession.isTest !== true) {
+        throw new Error('নিরাপত্তা নীতি: সিমুলেটেড SMS কখনো আসল সেশন যাচাই করতে পারবে না।');
+      }
+
+      const targetStore = accessibleStores.find((s) => s.id === targetSession.storeId) || null;
+      const usedTrxIds = new Set<string>();
+      for (const s of smsList) {
+        if (s.trxId) usedTrxIds.add(s.trxId.trim().toUpperCase());
+      }
+      for (const sess of accountSessions) {
+        if (sess.trxId) usedTrxIds.add(sess.trxId.trim().toUpperCase());
+      }
+
+      const nowMs = Date.now();
+      const sampleSms = generateSampleWalletSms({
+        method: targetSession.method,
+        amountPaisa: targetSession.payablePaisa,
+        receiverNumber: targetSession.number,
+        existingTrxIds: usedTrxIds,
+        timestampMs: nowMs,
+      });
+
+      // Evaluate via shared server-equivalent safety rules
+      const evaluation = evaluateSmsAgainstSession({
+        session: targetSession,
+        sms: {
+          method: sampleSms.method,
+          amountPaisa: sampleSms.amountPaisa,
+          sender: sampleSms.customerPhone,
+          trxId: sampleSms.trxId,
+          simulated: true,
+        },
+        usedTrxIds,
+        nowMs,
+        webhookUrl: targetStore?.webhookUrl || '',
+      });
+
+      if (!evaluation.ok && evaluation.rejectedForbidden) {
+        throw new Error(evaluation.failureReasonBn);
+      }
+
+      // Try Worker POST /sms/ingest first if workerBaseUrl is configured
+      let handledByWorker = false;
+      if (!isAutoTest && fbUser && platformConfig.workerBaseUrl) {
+        const idToken = await fbUser.getIdToken();
+        const workerRes = await submitSmsIngestWithSimulation(
+          platformConfig.workerBaseUrl,
+          { firebaseIdToken: idToken },
+          {
+            storeId: targetSession.storeId,
+            sessionId: targetSession.id,
+            method: sampleSms.method,
+            amountPaisa: sampleSms.amountPaisa,
+            sender: sampleSms.customerPhone,
+            trxId: sampleSms.trxId,
+            raw: sampleSms.raw,
+            smsTimeMs: sampleSms.smsTimeMs,
+            simulated: true,
+          }
+        );
+        if (workerRes.supported) {
+          handledByWorker = true;
+          const updatedFromWorker: PaySessionDoc = {
+            ...targetSession,
+            status: workerRes.ok ? 'paid' : 'failed',
+            trxId: workerRes.trxId ?? sampleSms.trxId,
+            sender: sampleSms.customerPhone,
+            paidAtMs: workerRes.ok ? nowMs : null,
+            testResult: workerRes.testResult || (workerRes.ok ? 'verified_simulated' : 'failed'),
+            failureReason: workerRes.failureReason || null,
+            simulated: true,
+            webhookFired: false, // Test sessions never fire production webhook
+          };
+          return {
+            session: updatedFromWorker,
+            sampleSms,
+            webhookFired: false,
+          };
+        }
+      }
+
+      const smsDocId = generateDocId('simsms');
+      const nextSession: PaySessionDoc = evaluation.ok
+        ? {
+            ...targetSession,
+            status: 'paid',
+            trxId: evaluation.trxId,
+            sender: sampleSms.customerPhone,
+            paidAtMs: evaluation.paidAtMs,
+            testResult: 'verified_simulated',
+            failureReason: null,
+            expectedAmountPaisa: targetSession.payablePaisa,
+            receivedAmountPaisa: sampleSms.amountPaisa,
+            simulated: true,
+            webhookFired: false,
+          }
+        : {
+            ...targetSession,
+            status: evaluation.failureCode === 'expired' ? 'expired' : 'failed',
+            trxId: sampleSms.trxId,
+            sender: sampleSms.customerPhone,
+            testResult: 'failed',
+            failureReason: evaluation.failureCode,
+            expectedAmountPaisa: evaluation.expectedAmountPaisa,
+            receivedAmountPaisa: evaluation.receivedAmountPaisa,
+            simulated: true,
+            webhookFired: false,
+          };
+
+      const nextSmsDoc: PaySmsDoc = {
+        id: smsDocId,
+        accountId: targetSession.accountId,
+        storeId: targetSession.storeId,
+        method: sampleSms.method,
+        amountPaisa: sampleSms.amountPaisa,
+        sender: sampleSms.customerPhone,
+        trxId: sampleSms.trxId,
+        smsTimeMs: sampleSms.smsTimeMs,
+        receivedAtMs: nowMs,
+        raw: sampleSms.raw,
+        matchResult: evaluation.ok ? 'matched' : 'unmatched',
+        matched: evaluation.ok,
+        dismissed: false,
+        sessionId: targetSession.id,
+        simulated: true,
+      };
+
+      if (isAutoTest) {
+        setOwnedSessions((prev) =>
+          prev.map((s) => (s.id === targetSession.id ? nextSession : s))
+        );
+        setSmsList((prev) => [nextSmsDoc, ...prev]);
+        return { session: nextSession, sampleSms, webhookFired: false };
+      }
+
+      if (!handledByWorker) {
+        try {
+          const batch = writeBatch(db);
+          batch.update(doc(db, 'paySessions', targetSession.id), {
+            status: nextSession.status,
+            trxId: nextSession.trxId,
+            sender: nextSession.sender,
+            paidAt: nextSession.paidAtMs ? Timestamp.fromMillis(nextSession.paidAtMs) : null,
+            testResult: nextSession.testResult,
+            simulated: true,
+            failureReason: nextSession.failureReason ?? null,
+            expectedAmountPaisa: nextSession.expectedAmountPaisa ?? targetSession.payablePaisa,
+            receivedAmountPaisa: nextSession.receivedAmountPaisa ?? sampleSms.amountPaisa,
+            webhookFired: false,
+          });
+          batch.set(doc(db, 'paySms', smsDocId), {
+            accountId: targetSession.accountId,
+            storeId: targetSession.storeId,
+            method: sampleSms.method,
+            amountPaisa: sampleSms.amountPaisa,
+            sender: sampleSms.customerPhone,
+            trxId: sampleSms.trxId,
+            smsTime: sampleSms.smsTimeMs,
+            receivedAt: Timestamp.fromMillis(nowMs),
+            raw: sampleSms.raw,
+            matchResult: nextSmsDoc.matchResult,
+            matched: nextSmsDoc.matched,
+            dismissed: false,
+            sessionId: targetSession.id,
+            simulated: true,
+          });
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `paySessions/${targetSession.id}`);
+        }
+      }
+
+      return { session: nextSession, sampleSms, webhookFired: false };
+    },
+    [
+      activeUser,
+      account,
+      accountSessions,
+      accessibleStores,
+      smsList,
+      isAutoTest,
+      fbUser,
+      platformConfig.workerBaseUrl,
+    ]
+  );
+
   // ─── Hard Device Binding (Single-use 10-min pairingTokens + deviceLimit) ─
   const issueSingleUsePairingToken = useCallback(
     async (deviceName: string): Promise<{ token: PairingTokenDoc; qrPayload: string }> => {
@@ -2176,6 +2932,11 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         workerBaseUrl?: string;
         trialPlanId?: string;
         subscriptionStoreId?: string | null;
+        brandLogoUrl?: string;
+        brandLogoDataUrl?: string;
+        supportWhatsApp?: string;
+        supportPhone?: string;
+        landing?: LandingPageConfig;
       },
       note: string
     ) => {
@@ -2191,10 +2952,36 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ? input.subscriptionStoreId
           : platformConfig.subscriptionStoreId;
 
+      const rawBrandUrl =
+        input.brandLogoUrl !== undefined
+          ? input.brandLogoUrl.trim().slice(0, 512)
+          : platformConfig.brandLogoUrl;
+      if (rawBrandUrl && !isSafeHttpUrl(rawBrandUrl)) {
+        throw new Error('লোগো URL অবশ্যই https:// বা http:// দিয়ে শুরু হতে হবে।');
+      }
+      const nextBrandDataUrl =
+        input.brandLogoDataUrl !== undefined
+          ? input.brandLogoDataUrl && isValidLogoDataUrl(input.brandLogoDataUrl)
+            ? input.brandLogoDataUrl
+            : ''
+          : platformConfig.brandLogoDataUrl;
+      const nextWhatsApp =
+        input.supportWhatsApp !== undefined
+          ? input.supportWhatsApp.trim().slice(0, 32)
+          : platformConfig.supportWhatsApp;
+      const nextPhone =
+        input.supportPhone !== undefined
+          ? input.supportPhone.trim().slice(0, 32)
+          : platformConfig.supportPhone;
+      const nextLanding =
+        input.landing !== undefined
+          ? normalizeLandingConfig(input.landing)
+          : platformConfig.landing;
+
       cacheWorkerConfigLocally(nextWorker, selectedStore?.name || '');
       const actId = generateDocId('act');
       const cleanNote = note.trim().slice(0, 300) || 'প্ল্যাটফর্ম সেটিংস আপডেট';
-      const detail = `Platform config updated (trialPlan=${nextTrialPlan}, subStore=${nextSubStore || 'none'})`;
+      const detail = `Platform config updated (trialPlan=${nextTrialPlan || 'none'}, subStore=${nextSubStore || 'none'})`;
 
       if (isAutoTest) {
         setPlatformConfig((prev) => ({
@@ -2202,6 +2989,11 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           workerBaseUrl: nextWorker,
           trialPlanId: nextTrialPlan,
           subscriptionStoreId: nextSubStore,
+          brandLogoUrl: rawBrandUrl,
+          brandLogoDataUrl: nextBrandDataUrl,
+          supportWhatsApp: nextWhatsApp,
+          supportPhone: nextPhone,
+          landing: nextLanding,
           updatedAtMs: Date.now(),
         }));
         setActivityLog((prev) => [
@@ -2233,6 +3025,11 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             trialPlanId: nextTrialPlan,
             subscriptionStoreId: nextSubStore,
             plansSeeded: true,
+            brandLogoUrl: rawBrandUrl,
+            brandLogoDataUrl: nextBrandDataUrl,
+            supportWhatsApp: nextWhatsApp,
+            supportPhone: nextPhone,
+            landing: nextLanding,
             updatedAt: serverTimestamp(),
           },
           { merge: true }
@@ -2988,14 +3785,17 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       allSessions,
       allDevices,
       activityLog,
+      subscriptionPurchases,
       signInWithGoogle,
       signInWithEmail,
       signUpWithEmail,
+      signUpFunnelAccount,
       reauthenticateUser,
       signOutUser,
       signOutAllSessions,
       markChangelogRead,
       createStore,
+      saveStorePaymentMethods,
       saveStoreSettings,
       savePaymentPageSettings,
       rotateStoreKey,
@@ -3004,6 +3804,10 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       removeStoreMember,
       deleteStore,
       createManualSessionViaWorker,
+      createTestVerificationSession,
+      sendSimulatedTestSms,
+      testHistoryClearedBeforeMs,
+      clearTestHistory,
       cancelWaitingSession,
       manualConfirmSession,
       matchUnmatchedSmsToSession,
@@ -3061,14 +3865,17 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       allSessions,
       allDevices,
       activityLog,
+      subscriptionPurchases,
       signInWithGoogle,
       signInWithEmail,
       signUpWithEmail,
+      signUpFunnelAccount,
       reauthenticateUser,
       signOutUser,
       signOutAllSessions,
       markChangelogRead,
       createStore,
+      saveStorePaymentMethods,
       saveStoreSettings,
       savePaymentPageSettings,
       rotateStoreKey,
@@ -3077,6 +3884,10 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       removeStoreMember,
       deleteStore,
       createManualSessionViaWorker,
+      createTestVerificationSession,
+      sendSimulatedTestSms,
+      testHistoryClearedBeforeMs,
+      clearTestHistory,
       cancelWaitingSession,
       manualConfirmSession,
       matchUnmatchedSmsToSession,

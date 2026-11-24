@@ -8,6 +8,8 @@ import {
   Eye,
   Globe,
   Layers,
+  Megaphone,
+  Receipt,
   Save,
   Shield,
   Sparkles,
@@ -37,17 +39,29 @@ import type {
 } from '../types/payment';
 import { SuperAdminPlansTab } from './SuperAdminPlansTab';
 import { SuperAdminChangelogTab } from './SuperAdminChangelogTab';
+import { SuperAdminLandingTab } from './SuperAdminLandingTab';
 import {
   CHECKOUT_METHOD_BRANDS,
   CHECKOUT_METHODS,
   formatAccountTypeLabel,
   normalizePaymentAccounts,
+  normalizePaymentActionType,
+  PAYMENT_ACTION_LABELS_BN,
   resolveStoreCheckoutOptions,
 } from '../lib/checkoutFlow';
 import { HostedPaymentPage } from './HostedPaymentPage';
-import { PaymentMethodMark, StoreBrandAvatar } from './PaymentMethodMarks';
+import { StoreBrandAvatar } from './PaymentMethodMarks';
+import { PaymentLogo } from './PaymentLogo';
 
-type AdminTab = 'summary' | 'notifications' | 'plans' | 'accounts' | 'stores' | 'changelog';
+type AdminTab =
+  | 'summary'
+  | 'landing'
+  | 'purchases'
+  | 'notifications'
+  | 'plans'
+  | 'accounts'
+  | 'stores'
+  | 'changelog';
 
 export const SuperAdminView: React.FC = () => {
   const {
@@ -60,6 +74,7 @@ export const SuperAdminView: React.FC = () => {
     allSessions,
     allDevices,
     activityLog,
+    subscriptionPurchases,
     adminSaveWorkerBaseUrl,
     adminUpdateAccount,
     adminConvertStoreType,
@@ -272,6 +287,13 @@ export const SuperAdminView: React.FC = () => {
     badge?: number;
   }> = [
     { id: 'summary', label: 'প্ল্যাটফর্ম সারাংশ', icon: Activity },
+    { id: 'landing', label: 'ল্যান্ডিং পেজ / বিজ্ঞাপন', icon: Megaphone },
+    {
+      id: 'purchases',
+      label: 'সাবস্ক্রিপশন ক্রয়',
+      icon: Receipt,
+      badge: subscriptionPurchases.length,
+    },
     { id: 'notifications', label: 'বিজ্ঞপ্তি', icon: Bell, badge: notifications.length },
     { id: 'plans', label: 'প্ল্যানসমূহ', icon: Layers, badge: plans.length },
     { id: 'accounts', label: 'সব অ্যাকাউন্ট', icon: Users, badge: allAccounts.length },
@@ -299,6 +321,7 @@ export const SuperAdminView: React.FC = () => {
             <button
               key={t.id}
               type="button"
+              data-testid={`super-admin-tab-${t.id}`}
               onClick={() => setTab(t.id)}
               className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold border transition-colors ${
                 active
@@ -493,6 +516,97 @@ export const SuperAdminView: React.FC = () => {
                   <span className="text-xs font-semibold text-teal-700">অ্যাকাউন্ট দেখুন →</span>
                 </button>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB: ল্যান্ডিং পেজ / বিজ্ঞাপন (Step 1B Editor + Live Preview) */}
+      {tab === 'landing' && <SuperAdminLandingTab />}
+
+      {/* TAB: সাবস্ক্রিপশন ক্রয় (Public Funnel Pending -> Paid / Failed / Expired History) */}
+      {tab === 'purchases' && (
+        <div
+          className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden"
+          data-testid="super-admin-purchases-tab"
+        >
+          <div className="px-6 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">সাবস্ক্রিপশন ক্রয় তালিকা</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                পাবলিক সেলিং ফানেল থেকে আসা প্রতিটি পেন্ডিং, যাচাইকৃত ও বাতিল ক্রয় এখানে দেখা যায়।
+              </p>
+            </div>
+          </div>
+
+          {subscriptionPurchases.length === 0 ? (
+            <div className="py-12 text-center text-sm text-slate-500">
+              এখনো কোনো পাবলিক সাবস্ক্রিপশন ক্রয় রেকর্ড নেই
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-semibold text-slate-500">
+                    <th className="py-3 px-4">ক্রেতা ও মোবাইল</th>
+                    <th className="py-3 px-4">প্যাকেজ ও পরিমাণ</th>
+                    <th className="py-3 px-4">মাধ্যম ও TrxID</th>
+                    <th className="py-3 px-4">অবস্থা</th>
+                    <th className="py-3 px-4">অ্যাকাউন্ট ও সময়</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs">
+                  {subscriptionPurchases.map((p) => {
+                    const statusBadge =
+                      p.status === 'paid'
+                        ? { label: 'পেইড (যাচাইকৃত)', cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' }
+                        : p.status === 'pending'
+                          ? { label: 'পেন্ডিং', cls: 'bg-amber-50 text-amber-900 border-amber-200' }
+                          : p.status === 'expired'
+                            ? { label: 'মেয়াদোত্তীর্ণ', cls: 'bg-slate-100 text-slate-600 border-slate-200' }
+                            : p.status === 'cancelled'
+                              ? { label: 'বাতিল', cls: 'bg-slate-100 text-slate-600 border-slate-200' }
+                              : { label: 'ব্যর্থ', cls: 'bg-rose-50 text-rose-800 border-rose-200' };
+                    return (
+                      <tr key={p.id} className="hover:bg-slate-50/60">
+                        <td className="py-3.5 px-4">
+                          <div className="font-bold text-slate-900">{p.buyerName || '—'}</div>
+                          <div className="font-mono text-slate-500 mt-0.5">{p.buyerPhone || '—'}</div>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="font-bold text-slate-900">
+                            {p.planName} ({p.billingCycle === 'yearly' ? 'বাৎসরিক' : 'মাসিক'})
+                          </div>
+                          <div className="font-semibold text-teal-800 tabular-nums mt-0.5">
+                            {formatBdt(p.amountPaisa)}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="flex items-center gap-2">
+                            <PaymentLogo method={p.method} size="sm" />
+                          </div>
+                          <div className="font-mono text-slate-600 mt-1">
+                            {p.trxId ? `TrxID: ${p.trxId}` : `Ref: ${p.reference}`}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className={`inline-flex px-2.5 py-1 rounded-md border font-semibold ${statusBadge.cls}`}>
+                            {statusBadge.label}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-600">
+                          <div className="font-mono text-slate-800">
+                            {p.claimedEmail || (p.claimedAccountId ? p.claimedAccountId : 'এখনো অ্যাকাউন্ট তৈরি হয়নি')}
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            {formatBanglaDateTime(p.createdAtMs)}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
@@ -1018,7 +1132,7 @@ export const SuperAdminView: React.FC = () => {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <PaymentMethodMark method={method} className="w-7 h-7" />
+                        <PaymentLogo method={method} size="sm" />
                         <span
                           className="text-sm font-bold"
                           style={{ color: brand.primaryHex }}
@@ -1045,7 +1159,13 @@ export const SuperAdminView: React.FC = () => {
                           >
                             <span>{acc.number}</span>
                             <span className="font-sans text-[11px] font-semibold text-slate-500">
-                              {formatAccountTypeLabel(acc.type)} · {acc.active ? 'সক্রিয়' : 'নিষ্ক্রিয়'}
+                              {formatAccountTypeLabel(acc.type)} ·{' '}
+                              {
+                                PAYMENT_ACTION_LABELS_BN[
+                                  normalizePaymentActionType(acc.actionType, acc.type)
+                                ]
+                              }{' '}
+                              · {acc.active ? 'সক্রিয়' : 'নিষ্ক্রিয়'}
                             </span>
                           </div>
                         ))}

@@ -340,10 +340,15 @@ export function computeSetupChecklist(
         (m) => store.numberEnabled[m] && store.numbers[m].trim().length === 11
       )
   );
-  const hasConfirmedSession = storeSessions.some((s) => s.status === 'paid');
+  const hasConfirmedSession = storeSessions.some(
+    (s) =>
+      s.status === 'paid' ||
+      s.testResult === 'verified' ||
+      s.testResult === 'verified_simulated'
+  );
   const hasLiveSession = Boolean(
     store?.liveConfirmedManually ||
-      storeSessions.some((s) => s.status === 'paid' && s.source === 'kenax')
+      storeSessions.some((s) => !s.isTest && s.status === 'paid' && s.source === 'kenax')
   );
 
   const steps: SetupChecklistStep[] = [
@@ -503,7 +508,7 @@ export function computeSuperAdminNotifications(
 }
 
 export function isSmsUnmatchedForInbox(sms: PaySmsDoc): boolean {
-  if (sms.dismissed) return false;
+  if (sms.dismissed || sms.simulated) return false;
   return !sms.matched || sms.matchResult === 'unmatched';
 }
 
@@ -550,7 +555,7 @@ export function generatePaidSessionsCsv(
   const toMs = toDate ? new Date(`${toDate}T23:59:59.999`).getTime() : Number.MAX_SAFE_INTEGER;
 
   const matching = sessions.filter((s) => {
-    if (s.status !== 'paid') return false;
+    if (s.isTest || s.status !== 'paid') return false;
     const paidMs = s.paidAtMs ?? s.createdAtMs;
     return paidMs >= fromMs && paidMs <= toMs;
   });
@@ -599,6 +604,7 @@ export function countSessionsToday(sessions: PaySessionDoc[], nowMs: number): nu
   const endMs = startMs + 24 * 60 * 60 * 1000;
   let count = 0;
   for (const s of sessions) {
+    if (s.isTest) continue;
     if (s.createdAtMs >= startMs && s.createdAtMs < endMs) {
       count += 1;
     }
@@ -619,6 +625,7 @@ export function computeTodayStoreStats(
   let paidTodayCount = 0;
 
   for (const s of sessions) {
+    if (s.isTest) continue;
     if (s.createdAtMs >= startMs && s.createdAtMs < endMs) {
       sessionsToday += 1;
     }

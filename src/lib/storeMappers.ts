@@ -1,7 +1,13 @@
 import type { DocumentData } from 'firebase/firestore';
 import { parseTimestampMs } from './money';
 import { isValidHexColor } from './platformLogic';
-import { isValidLogoDataUrl, normalizePaymentAccounts } from './checkoutFlow';
+import {
+  enforceEnabledRequiresSavedNumber,
+  isValidLogoDataUrl,
+  normalizePaymentAccounts,
+  syncLegacyNumbersFromAccounts,
+} from './checkoutFlow';
+import { cloneDefaultLandingConfig, normalizeLandingConfig } from './landingConfig';
 import {
   DEFAULT_STORE_ACCENT,
   SEEDED_PLAN_IDS,
@@ -23,9 +29,11 @@ import {
   type PaySettingsMain,
   type PaySmsDoc,
   type PayStoreDoc,
+  type PaySubscriptionPurchaseDoc,
   type PlanStatus,
   type PlanTier,
   type StoreMemberRole,
+  type SubscriptionPurchaseStatus,
   type WalletMethod,
 } from '../types/payment';
 
@@ -36,18 +44,68 @@ export const DEFAULT_PLATFORM_CONFIG: PayPlatformConfig = {
   trialPlanId: SEEDED_PLAN_IDS.standard,
   subscriptionStoreId: null,
   plansSeeded: false,
+  brandLogoUrl: '',
+  brandLogoDataUrl: '',
+  supportWhatsApp: '',
+  supportPhone: '',
+  landing: cloneDefaultLandingConfig(),
   updatedAtMs: null,
 };
 
 export function mapPlatformConfig(d: DocumentData): PayPlatformConfig {
+  const rawBrandLogoDataUrl = typeof d.brandLogoDataUrl === 'string' ? d.brandLogoDataUrl : '';
   return {
     workerBaseUrl: String(d.workerBaseUrl || ''),
     migratedFromSettingsMain: Boolean(d.migratedFromSettingsMain),
     migratedStoreId: d.migratedStoreId ? String(d.migratedStoreId) : null,
-    trialPlanId: d.trialPlanId ? String(d.trialPlanId) : SEEDED_PLAN_IDS.standard,
+    trialPlanId:
+      d.trialPlanId === undefined
+        ? SEEDED_PLAN_IDS.standard
+        : d.trialPlanId
+          ? String(d.trialPlanId)
+          : '',
     subscriptionStoreId: d.subscriptionStoreId ? String(d.subscriptionStoreId) : null,
     plansSeeded: Boolean(d.plansSeeded),
+    brandLogoUrl: typeof d.brandLogoUrl === 'string' ? d.brandLogoUrl.trim() : '',
+    brandLogoDataUrl: isValidLogoDataUrl(rawBrandLogoDataUrl) ? rawBrandLogoDataUrl : '',
+    supportWhatsApp: typeof d.supportWhatsApp === 'string' ? d.supportWhatsApp.trim() : '',
+    supportPhone: typeof d.supportPhone === 'string' ? d.supportPhone.trim() : '',
+    landing: normalizeLandingConfig(d.landing),
     updatedAtMs: parseTimestampMs(d.updatedAt),
+  };
+}
+
+export function mapSubscriptionPurchase(id: string, d: DocumentData): PaySubscriptionPurchaseDoc {
+  const rawStatus = String(d.status || 'pending').toLowerCase();
+  const status: SubscriptionPurchaseStatus = (
+    ['pending', 'paid', 'failed', 'expired', 'cancelled'].includes(rawStatus)
+      ? rawStatus
+      : 'pending'
+  ) as SubscriptionPurchaseStatus;
+  const rawMethod = String(d.method || 'bkash').toLowerCase();
+  const method: WalletMethod = (
+    ['bkash', 'nagad', 'rocket', 'upay'].includes(rawMethod) ? rawMethod : 'bkash'
+  ) as WalletMethod;
+
+  return {
+    id,
+    reference: String(d.reference || id),
+    planId: String(d.planId || ''),
+    planName: String(d.planName || 'প্যাকেজ'),
+    billingCycle: d.billingCycle === 'yearly' ? 'yearly' : 'monthly',
+    amountPaisa: Math.max(0, Math.trunc(Number(d.amountPaisa ?? 0))),
+    method,
+    buyerName: String(d.buyerName || ''),
+    buyerPhone: String(d.buyerPhone || ''),
+    sessionId: d.sessionId ? String(d.sessionId) : null,
+    status,
+    trxId: d.trxId ? String(d.trxId) : null,
+    claimedAccountId: d.claimedAccountId ? String(d.claimedAccountId) : null,
+    claimedEmail: d.claimedEmail ? String(d.claimedEmail) : null,
+    createdAtMs: parseTimestampMs(d.createdAt) ?? Date.now(),
+    paidAtMs: parseTimestampMs(d.paidAt),
+    expiresAtMs: parseTimestampMs(d.expiresAt),
+    claimedAtMs: parseTimestampMs(d.claimedAt),
   };
 }
 
@@ -252,6 +310,14 @@ export function mapStore(id: string, d: DocumentData): PayStoreDoc {
       : undefined,
     legacyNumbers
   );
+  const syncedNumbers = syncLegacyNumbersFromAccounts(paymentAccounts);
+  const rawEnabled = {
+    bkash: en.bkash !== undefined ? Boolean(en.bkash) : paymentAccounts.bkash.length > 0,
+    nagad: en.nagad !== undefined ? Boolean(en.nagad) : paymentAccounts.nagad.length > 0,
+    rocket: en.rocket !== undefined ? Boolean(en.rocket) : paymentAccounts.rocket.length > 0,
+    upay: en.upay !== undefined ? Boolean(en.upay) : paymentAccounts.upay.length > 0,
+  };
+  const numberEnabled = enforceEnabledRequiresSavedNumber(rawEnabled, paymentAccounts);
   const rawLogoDataUrl = typeof d.logoDataUrl === 'string' ? d.logoDataUrl : '';
 
   return {
@@ -260,13 +326,8 @@ export function mapStore(id: string, d: DocumentData): PayStoreDoc {
     name: String(d.name || 'স্টোর'),
     nameEn: typeof d.nameEn === 'string' ? d.nameEn.trim() : '',
     type: d.type === 'own' ? 'own' : 'customer',
-    numbers: legacyNumbers,
-    numberEnabled: {
-      bkash: en.bkash !== undefined ? Boolean(en.bkash) : true,
-      nagad: en.nagad !== undefined ? Boolean(en.nagad) : true,
-      rocket: en.rocket !== undefined ? Boolean(en.rocket) : true,
-      upay: en.upay !== undefined ? Boolean(en.upay) : true,
-    },
+    numbers: syncedNumbers,
+    numberEnabled,
     paymentAccounts,
     uniquePaisa: Boolean(d.uniquePaisa),
     sessionMinutes: Math.min(120, Math.max(5, Math.trunc(Number(d.sessionMinutes ?? 15)))),
@@ -312,6 +373,23 @@ export function mapSession(id: string, d: DocumentData): PaySessionDoc {
     successUrl: typeof d.successUrl === 'string' ? d.successUrl : undefined,
     failUrl: typeof d.failUrl === 'string' ? d.failUrl : undefined,
     memberUids: Array.isArray(d.memberUids) ? d.memberUids.map(String) : undefined,
+    isTest: Boolean(d.isTest),
+    testType:
+      d.testType === 'simulation' || d.testType === 'real' ? d.testType : undefined,
+    testResult:
+      d.testResult === 'pending' ||
+      d.testResult === 'verified' ||
+      d.testResult === 'verified_simulated' ||
+      d.testResult === 'failed'
+        ? d.testResult
+        : undefined,
+    failureReason: typeof d.failureReason === 'string' ? d.failureReason : null,
+    expectedAmountPaisa:
+      typeof d.expectedAmountPaisa === 'number' ? Math.trunc(d.expectedAmountPaisa) : null,
+    receivedAmountPaisa:
+      typeof d.receivedAmountPaisa === 'number' ? Math.trunc(d.receivedAmountPaisa) : null,
+    simulated: Boolean(d.simulated),
+    webhookFired: typeof d.webhookFired === 'boolean' ? d.webhookFired : undefined,
     subscriptionRefAccountId: d.subscriptionRefAccountId
       ? String(d.subscriptionRefAccountId)
       : null,
@@ -343,6 +421,7 @@ export function mapSms(id: string, d: DocumentData): PaySmsDoc {
     matched,
     dismissed: Boolean(d.dismissed),
     sessionId: d.sessionId ? String(d.sessionId) : null,
+    simulated: Boolean(d.simulated),
   };
 }
 

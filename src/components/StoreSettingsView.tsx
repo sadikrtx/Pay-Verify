@@ -17,15 +17,9 @@ import {
 } from 'lucide-react';
 import { usePayVerify } from '../lib/store';
 import { formatBanglaDateTime, parseTimestampMs } from '../lib/money';
-import {
-  DEFAULT_STORE_ACCENT,
-  WALLET_META,
-  WALLET_METHODS,
-  type StoreMemberRole,
-  type WalletEnabledMap,
-  type WalletNumbersMap,
-} from '../types/payment';
+import { DEFAULT_STORE_ACCENT, type StoreMemberRole } from '../types/payment';
 import { ReauthModal } from './ReauthModal';
+import { PaymentMethodsManager } from './PaymentMethodsManager';
 
 const ROLE_LABELS_BN: Record<StoreMemberRole, string> = {
   'co-owner': 'সহ-মালিক (Co-owner)',
@@ -46,6 +40,7 @@ export const StoreSettingsView: React.FC = () => {
     selectedStorePermissions,
     selectedStoreIsPaused,
     effectivePlan,
+    saveStorePaymentMethods,
     saveStoreSettings,
     rotateStoreKey,
     addStoreMember,
@@ -53,18 +48,6 @@ export const StoreSettingsView: React.FC = () => {
   } = usePayVerify();
 
   const [name, setName] = useState('');
-  const [numbers, setNumbers] = useState<WalletNumbersMap>({
-    bkash: '',
-    nagad: '',
-    rocket: '',
-    upay: '',
-  });
-  const [numberEnabled, setNumberEnabled] = useState<WalletEnabledMap>({
-    bkash: true,
-    nagad: true,
-    rocket: true,
-    upay: true,
-  });
   const [uniquePaisa, setUniquePaisa] = useState(false);
   const [sessionMinutes, setSessionMinutes] = useState(15);
   const [logoUrl, setLogoUrl] = useState('');
@@ -94,8 +77,6 @@ export const StoreSettingsView: React.FC = () => {
   useEffect(() => {
     if (!selectedStore) return;
     setName(selectedStore.name);
-    setNumbers(selectedStore.numbers);
-    setNumberEnabled(selectedStore.numberEnabled);
     setUniquePaisa(selectedStore.uniquePaisa);
     setSessionMinutes(selectedStore.sessionMinutes);
     setLogoUrl(selectedStore.logoUrl);
@@ -128,8 +109,6 @@ export const StoreSettingsView: React.FC = () => {
     try {
       await saveStoreSettings(selectedStore.id, {
         name,
-        numbers,
-        numberEnabled,
         uniquePaisa,
         sessionMinutes,
         logoUrl,
@@ -320,74 +299,27 @@ export const StoreSettingsView: React.FC = () => {
         </div>
       )}
 
-      <form onSubmit={handleSave} className="space-y-6">
-        {/* 4 Wallet Numbers */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {WALLET_METHODS.map((method) => {
-            const meta = WALLET_META[method];
-            const enabled = numberEnabled[method];
-            return (
-              <div
-                key={method}
-                className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-3.5"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span
-                      className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-extrabold text-white"
-                      style={{ backgroundColor: meta.color }}
-                    >
-                      {meta.shortMark}
-                    </span>
-                    <span className="text-base font-bold text-slate-900">{meta.name}</span>
-                  </div>
-
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                    <span className="text-xs font-semibold text-slate-600">
-                      {enabled ? 'চালু' : 'বন্ধ'}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={!canEdit}
-                      role="switch"
-                      aria-checked={enabled}
-                      aria-label={`${meta.name} চালু/বন্ধ`}
-                      onClick={() =>
-                        setNumberEnabled((prev) => ({ ...prev, [method]: !prev[method] }))
-                      }
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
-                        enabled ? 'bg-teal-600' : 'bg-slate-200'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                          enabled ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </label>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    রিসিভিং নম্বর
-                  </label>
-                  <input
-                    type="tel"
-                    disabled={!canEdit}
-                    value={numbers[method]}
-                    onChange={(e) =>
-                      setNumbers((prev) => ({ ...prev, [method]: e.target.value }))
-                    }
-                    placeholder="01XXXXXXXXX"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 font-mono text-sm text-slate-900 disabled:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-teal-500"
-                  />
-                </div>
-              </div>
-            );
-          })}
+      {/* Unified Single-Source Payment Methods & Numbers (independent explicit save per number) */}
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-bold text-slate-900">রিসিভিং পেমেন্ট নম্বর ও মাধ্যম</h2>
+          <span className="text-xs text-slate-500">
+            পেমেন্ট পেজ সেটিংস এবং স্টোর সেটিংস একই তালিকা ব্যবহার করে
+          </span>
         </div>
+        <PaymentMethodsManager
+          store={selectedStore}
+          canEdit={canEdit}
+          onSaveMethods={(nextAccounts, nextEnabled) =>
+            saveStorePaymentMethods(selectedStore.id, nextAccounts, nextEnabled)
+          }
+          showBulkRuleBar={false}
+          showHonestCustomerPreview
+          layout="grid"
+        />
+      </section>
 
+      <form onSubmit={handleSave} className="space-y-6">
         {/* Store General + Payment Page Branding */}
         <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-5">
           <div className="flex items-center gap-2">
@@ -577,10 +509,11 @@ export const StoreSettingsView: React.FC = () => {
             <button
               type="submit"
               disabled={saving}
+              data-testid="save-store-general-settings-btn"
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:opacity-60 shadow-xs"
             >
               <Save className="w-4 h-4" />
-              {saving ? 'সংরক্ষণ হচ্ছে...' : 'পরিবর্তন সংরক্ষণ করুন'}
+              {saving ? 'সংরক্ষণ হচ্ছে...' : 'স্টোর তথ্য সংরক্ষণ করুন'}
             </button>
           </div>
         )}

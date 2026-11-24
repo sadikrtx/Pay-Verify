@@ -1,9 +1,13 @@
 export type WalletMethod = 'bkash' | 'nagad' | 'rocket' | 'upay';
-export type CheckoutWalletMethod = 'bkash' | 'nagad' | 'rocket';
+export type CheckoutWalletMethod = WalletMethod;
 export type NumberAccountType = 'personal' | 'agent';
+export type PaymentActionType = 'send_money' | 'cash_in' | 'cash_out' | 'payment';
 export type SessionStatus = 'waiting' | 'paid' | 'expired' | 'cancelled' | 'failed';
 export type SessionSource = 'kenax' | 'manual';
 export type SmsMatchResult = 'matched' | 'unmatched' | 'duplicate_trxid' | 'late';
+export type TestVerificationType = 'real' | 'simulation';
+export type TestVerificationResult = 'pending' | 'verified' | 'verified_simulated' | 'failed';
+export type TestFailureReasonCode = 'amount_mismatch' | 'expired' | 'trxid_used' | 'no_sms_yet';
 
 export type PlanStatus = 'trial' | 'active' | 'suspended';
 export type PlanTier = 'basic' | 'pro'; // Stored for legacy backward compatibility only; unused in A2
@@ -28,6 +32,8 @@ export interface WalletEnabledMap {
 export interface MethodNumberEntry {
   number: string;
   type: NumberAccountType;
+  actionType?: PaymentActionType;
+  customInstruction?: string;
   active: boolean;
 }
 
@@ -35,7 +41,10 @@ export interface PaymentAccountsMap {
   bkash: MethodNumberEntry[];
   nagad: MethodNumberEntry[];
   rocket: MethodNumberEntry[];
+  upay?: MethodNumberEntry[];
 }
+
+export type NormalizedPaymentAccountsMap = Record<WalletMethod, MethodNumberEntry[]>;
 
 export interface LastWebhookInfo {
   ok?: boolean;
@@ -60,6 +69,58 @@ export interface PaySettingsMain {
   lastWebhook: LastWebhookInfo | null;
 }
 
+export type HeroMediaType = 'three_step' | 'image' | 'video';
+
+export type BenefitIconKey =
+  | 'sms'
+  | 'checkout'
+  | 'stores'
+  | 'qr'
+  | 'shield'
+  | 'zap'
+  | 'wallet'
+  | 'clock';
+
+export interface LandingBenefitItem {
+  id: string;
+  icon: BenefitIconKey;
+  text: string;
+}
+
+export interface LandingFaqItem {
+  id: string;
+  question: string;
+  answer: string;
+}
+
+export interface LandingAnnouncementConfig {
+  enabled: boolean;
+  text: string;
+  offerEndsAtMs: number | null;
+}
+
+export interface LandingHeroConfig {
+  headline: string;
+  supportingLine: string;
+  ctaText: string;
+  mediaType: HeroMediaType;
+  imageUrl: string;
+  imageDataUrl: string;
+  videoUrl: string;
+  videoPosterUrl: string;
+  videoPosterDataUrl: string;
+}
+
+export interface LandingPageConfig {
+  announcement: LandingAnnouncementConfig;
+  hero: LandingHeroConfig;
+  howItWorksSteps: [string, string, string];
+  benefits: LandingBenefitItem[];
+  faqs: LandingFaqItem[];
+  finalCtaHeadline: string;
+  finalCtaButtonText: string;
+}
+
 export interface PayPlatformConfig {
   workerBaseUrl: string;
   migratedFromSettingsMain: boolean;
@@ -67,7 +128,40 @@ export interface PayPlatformConfig {
   trialPlanId: string;
   subscriptionStoreId: string | null;
   plansSeeded: boolean;
+  brandLogoUrl: string;
+  brandLogoDataUrl: string;
+  supportWhatsApp: string;
+  supportPhone: string;
+  landing: LandingPageConfig;
   updatedAtMs: number | null;
+}
+
+export type SubscriptionPurchaseStatus =
+  | 'pending'
+  | 'paid'
+  | 'failed'
+  | 'expired'
+  | 'cancelled';
+
+export interface PaySubscriptionPurchaseDoc {
+  id: string;
+  reference: string;
+  planId: string;
+  planName: string;
+  billingCycle: 'monthly' | 'yearly';
+  amountPaisa: number;
+  method: WalletMethod;
+  buyerName: string;
+  buyerPhone: string;
+  sessionId: string | null;
+  status: SubscriptionPurchaseStatus;
+  trxId: string | null;
+  claimedAccountId: string | null;
+  claimedEmail: string | null;
+  createdAtMs: number;
+  paidAtMs: number | null;
+  expiresAtMs: number | null;
+  claimedAtMs: number | null;
 }
 
 export interface PayPlanFeatures {
@@ -241,6 +335,15 @@ export interface PaySessionDoc {
   successUrl?: string;
   failUrl?: string;
   memberUids?: string[];
+  // Test verification metadata (A7)
+  isTest?: boolean;
+  testType?: TestVerificationType;
+  testResult?: TestVerificationResult;
+  failureReason?: string | null;
+  expectedAmountPaisa?: number | null;
+  receivedAmountPaisa?: number | null;
+  simulated?: boolean;
+  webhookFired?: boolean;
   // Subscription / Add-on receipt metadata (written on subscription store sessions)
   subscriptionRefAccountId?: string | null;
   subscriptionItemName?: string | null;
@@ -264,6 +367,7 @@ export interface PaySmsDoc {
   matched: boolean;
   dismissed?: boolean;
   sessionId: string | null;
+  simulated?: boolean;
 }
 
 export interface PayDeviceDoc {
@@ -285,6 +389,8 @@ export interface WorkerSessionStatusResponse {
   method: WalletMethod;
   number: string;
   numberType?: NumberAccountType;
+  actionType?: PaymentActionType;
+  customInstruction?: string;
   payablePaisa: number;
   expiresAt: number | string;
   trxId: string | null;
@@ -298,12 +404,26 @@ export interface WorkerSessionStatusResponse {
   uniquePaisa?: boolean;
   successUrl?: string | null;
   failUrl?: string | null;
-  enabledMethods?: CheckoutWalletMethod[];
+  enabledMethods?: WalletMethod[];
   methodNumbers?: Partial<
-    Record<CheckoutWalletMethod, { number: string; type: NumberAccountType }>
+    Record<
+      WalletMethod,
+      {
+        number: string;
+        type: NumberAccountType;
+        actionType?: PaymentActionType;
+        customInstruction?: string;
+      }
+    >
   >;
   failureReason?: string | null;
   isTest?: boolean;
+  testType?: TestVerificationType;
+  testResult?: TestVerificationResult;
+  simulated?: boolean;
+  expectedAmountPaisa?: number | null;
+  receivedAmountPaisa?: number | null;
+  webhookFired?: boolean;
 }
 
 export interface WorkerCreateSessionResponse {

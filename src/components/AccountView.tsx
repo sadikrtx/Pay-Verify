@@ -36,6 +36,7 @@ import {
   type WalletMethod,
 } from '../types/payment';
 import { ReauthModal } from './ReauthModal';
+import { PaymentLogo } from './PaymentLogo';
 
 function todayIsoDate(): string {
   const d = new Date();
@@ -775,18 +776,15 @@ export const AccountView: React.FC<AccountViewProps> = ({ onOpenPlanComparison }
                           key={m}
                           type="button"
                           onClick={() => setPayMethod(m)}
-                          className="py-2 px-3 rounded-xl border text-xs font-semibold flex items-center gap-2"
+                          className="py-2 px-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2.5 transition-all"
                           style={{
                             borderColor: active ? meta.color : '#E2E8F0',
                             backgroundColor: active ? meta.softBg : '#FFFFFF',
                             color: active ? meta.color : '#334155',
                           }}
                         >
-                          <span
-                            className="w-2 h-2 rounded-full"
-                            style={{ backgroundColor: meta.color }}
-                          />
-                          {meta.name}
+                          <PaymentLogo method={m} size="sm" />
+                          <span>{meta.name}</span>
                         </button>
                       );
                     })}

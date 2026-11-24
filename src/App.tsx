@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -11,7 +11,6 @@ import {
   Settings,
   Shield,
   ShieldAlert,
-  ShieldCheck,
   Smartphone,
   Sparkles,
   Store,
@@ -20,7 +19,11 @@ import {
 } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { HostedPaymentPage } from './components/HostedPaymentPage';
-import { SignInGate } from './components/SignInGate';
+import { PublicLandingPage } from './components/PublicLandingPage';
+import { FunnelCheckoutStep } from './components/FunnelCheckoutStep';
+import { FunnelAccountSetupStep } from './components/FunnelAccountSetupStep';
+import { BrandedLoginPage } from './components/BrandedLoginPage';
+import { PayVerifyBrandMark } from './components/PayVerifyBrandMark';
 import { MarketingPlansView } from './components/MarketingPlansView';
 import { OverviewView } from './components/OverviewView';
 import { SessionsView } from './components/SessionsView';
@@ -36,6 +39,7 @@ import { ChangelogView } from './components/ChangelogView';
 import { SuperAdminView } from './components/SuperAdminView';
 import { PayVerifyProvider, usePayVerify } from './lib/store';
 import { isSmsUnmatchedForInbox } from './lib/platformLogic';
+import type { PayPlanDoc } from './types/payment';
 
 type DashboardTab =
   | 'overview'
@@ -51,6 +55,8 @@ type DashboardTab =
   | 'account'
   | 'super_admin';
 
+type PublicRoute = 'landing' | 'pricing' | 'checkout' | 'setup_account' | 'login' | 'admin';
+
 function extractPublicSessionId(): string | null {
   if (typeof window === 'undefined') return null;
   const match = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/);
@@ -64,15 +70,21 @@ function extractPublicSessionId(): string | null {
   return null;
 }
 
-function isInitialPlansRoute(): boolean {
-  if (typeof window === 'undefined') return false;
-  return /^\/plans\/?$/.test(window.location.pathname);
+function resolveRouteFromPath(pathname: string): PublicRoute {
+  const clean = pathname.replace(/\/+$/, '') || '/';
+  if (clean === '/admin') return 'admin';
+  if (clean === '/login') return 'login';
+  if (clean === '/setup-account') return 'setup_account';
+  if (clean === '/pricing' || clean === '/plans') return 'pricing';
+  return 'landing';
 }
 
 const DashboardShell: React.FC = () => {
   const {
     user,
     authReady,
+    platformConfig,
+    plans,
     account,
     planEvaluation,
     effectivePlan,
@@ -87,17 +99,74 @@ const DashboardShell: React.FC = () => {
     dismissNewDeviceLoginAlert,
     signInWithGoogle,
     signInWithEmail,
-    signUpWithEmail,
+    signUpFunnelAccount,
+    signOutUser,
   } = usePayVerify();
 
-  const [activeTab, setActiveTab] = useState<DashboardTab>('overview');
+  const [publicRoute, setPublicRoute] = useState<PublicRoute>(() =>
+    typeof window !== 'undefined' ? resolveRouteFromPath(window.location.pathname) : 'landing'
+  );
+  const [selectedCheckoutPlan, setSelectedCheckoutPlan] = useState<{
+    plan: PayPlanDoc;
+    billingCycle: 'monthly' | 'yearly';
+  } | null>(null);
+  const [verifiedSetupContext, setVerifiedSetupContext] = useState<{
+    purchaseId: string;
+    claimToken: string;
+    planName: string;
+    buyerName: string;
+  } | null>(null);
+  const [postSignupLoginState, setPostSignupLoginState] = useState<{
+    email: string;
+    justCreated: boolean;
+  }>({ email: '', justCreated: false });
+  const [funnelBanner, setFunnelBanner] = useState<{
+    tone: 'error' | 'info';
+    message: string;
+  } | null>(null);
+
+  const [activeTab, setActiveTab] = useState<DashboardTab>(() =>
+    typeof window !== 'undefined' && resolveRouteFromPath(window.location.pathname) === 'admin'
+      ? 'super_admin'
+      : 'overview'
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [showPublicPlans, setShowPublicPlans] = useState<boolean>(() => isInitialPlansRoute());
   const [showInAppPlans, setShowInAppPlans] = useState(false);
+  const [autoOpenTestModal, setAutoOpenTestModal] = useState(false);
+
+  const navigatePublic = useCallback((path: string, nextRoute: PublicRoute) => {
+    if (typeof window !== 'undefined') {
+      const current = window.location.pathname + window.location.search;
+      if (current !== path) {
+        window.history.pushState({}, '', path);
+      }
+    }
+    setPublicRoute(nextRoute);
+    window.scrollTo({ top: 0 });
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const resolved = resolveRouteFromPath(window.location.pathname);
+      setPublicRoute(resolved);
+      if (resolved !== 'checkout') {
+        setSelectedCheckoutPlan(null);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // When a Super Admin logs in via /admin, open the super_admin tab directly
+  useEffect(() => {
+    if (user && account?.isSuperAdmin && publicRoute === 'admin') {
+      setActiveTab('super_admin');
+    }
+  }, [user, account?.isSuperAdmin, publicRoute]);
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
-  }, [activeTab, showPublicPlans, showInAppPlans]);
+  }, [activeTab, showInAppPlans]);
 
   const waitingCount = useMemo(
     () => storeSessions.filter((s) => s.status === 'waiting').length,
@@ -108,48 +177,134 @@ const DashboardShell: React.FC = () => {
     [smsList]
   );
 
-  // Public marketing plan comparison route (/plans) works both signed out and signed in
-  if (showPublicPlans) {
-    return (
-      <MarketingPlansView
-        onBack={() => {
-          setShowPublicPlans(false);
-          if (typeof window !== 'undefined' && /^\/plans\/?$/.test(window.location.pathname)) {
-            window.history.replaceState({}, '', '/');
-          }
-        }}
-        backLabel={user ? 'ড্যাশবোর্ডে ফিরুন' : 'সাইন ইনে ফিরুন'}
-        currentPlanId={effectivePlan?.plan.id || null}
-        onSelectPlan={() => {
-          setShowPublicPlans(false);
-          if (typeof window !== 'undefined' && /^\/plans\/?$/.test(window.location.pathname)) {
-            window.history.replaceState({}, '', '/');
-          }
-          if (user) {
-            setActiveTab('account');
-          }
-        }}
-        actionLabel={user ? 'প্ল্যান বেছে নিন' : '৭ দিনের ট্রায়াল শুরু করুন'}
-      />
-    );
-  }
-
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-[#F6F8FB] flex items-center justify-center p-6">
-        <div className="w-9 h-9 rounded-full border-3 border-teal-600 border-t-transparent animate-spin" />
+      <div className="min-h-screen bg-[#FFF9EC] flex items-center justify-center p-6">
+        <div className="w-9 h-9 rounded-full border-3 border-[#0F766E] border-t-transparent animate-spin" />
       </div>
     );
   }
 
+  // ─── LOGGED-OUT PUBLIC SELLING FUNNEL (Steps 1 -> 2 -> 3 -> 4 -> 5) & /admin ───
+  // Signed-in users NEVER see Steps 1–2.
   if (!user) {
+    if (publicRoute === 'admin') {
+      return (
+        <BrandedLoginPage
+          portal="admin"
+          platformConfig={platformConfig}
+          onEmailSignIn={(email, password, portal) => signInWithEmail(email, password, portal)}
+          onGoogleSignIn={(portal) => signInWithGoogle(portal)}
+        />
+      );
+    }
+
+    if (publicRoute === 'login') {
+      return (
+        <BrandedLoginPage
+          portal="buyer"
+          platformConfig={platformConfig}
+          prefilledEmail={postSignupLoginState.email}
+          justCreatedAccount={postSignupLoginState.justCreated}
+          onEmailSignIn={(email, password, portal) => signInWithEmail(email, password, portal)}
+          onGoogleSignIn={(portal) => signInWithGoogle(portal)}
+        />
+      );
+    }
+
+    if (publicRoute === 'setup_account') {
+      return (
+        <FunnelAccountSetupStep
+          platformConfig={platformConfig}
+          plans={plans}
+          verifiedContext={verifiedSetupContext}
+          onCreateFunnelAccount={signUpFunnelAccount}
+          onAccountCreated={({ email }) => {
+            setVerifiedSetupContext(null);
+            setPostSignupLoginState({ email, justCreated: true });
+            navigatePublic('/login', 'login');
+          }}
+          onBackToLanding={() => {
+            setVerifiedSetupContext(null);
+            navigatePublic('/', 'landing');
+          }}
+        />
+      );
+    }
+
+    if (publicRoute === 'checkout' && selectedCheckoutPlan) {
+      return (
+        <FunnelCheckoutStep
+          plan={selectedCheckoutPlan.plan}
+          initialBillingCycle={selectedCheckoutPlan.billingCycle}
+          platformConfig={platformConfig}
+          onBackToPlans={(banner) => {
+            setSelectedCheckoutPlan(null);
+            if (banner) setFunnelBanner(banner);
+            navigatePublic('/pricing', 'pricing');
+          }}
+          onPaymentVerified={(verified) => {
+            setSelectedCheckoutPlan(null);
+            setVerifiedSetupContext(verified);
+            navigatePublic(
+              `/setup-account?purchase=${encodeURIComponent(verified.purchaseId)}&token=${encodeURIComponent(verified.claimToken)}`,
+              'setup_account'
+            );
+          }}
+        />
+      );
+    }
+
+    // STEP 1 (/) & STEP 2 (/pricing or /plans) — ZERO login buttons or login links anywhere!
     return (
-      <SignInGate
-        onGoogleSignIn={signInWithGoogle}
-        onEmailSignIn={signInWithEmail}
-        onEmailSignUp={signUpWithEmail}
-        onViewPlans={() => setShowPublicPlans(true)}
+      <PublicLandingPage
+        platformConfig={platformConfig}
+        plans={plans}
+        initialScrollToPricing={publicRoute === 'pricing'}
+        statusBanner={funnelBanner}
+        onDismissBanner={() => setFunnelBanner(null)}
+        onSelectPaidPlan={(plan, billingCycle) => {
+          setFunnelBanner(null);
+          setSelectedCheckoutPlan({ plan, billingCycle });
+          setPublicRoute('checkout');
+          window.scrollTo({ top: 0 });
+        }}
+        onStartTrial={() => {
+          setFunnelBanner(null);
+          setVerifiedSetupContext(null);
+          navigatePublic('/setup-account?trial=1', 'setup_account');
+        }}
       />
+    );
+  }
+
+  // If a signed-in non-super-admin visits /admin directly, block access cleanly
+  if (publicRoute === 'admin' && account && !account.isSuperAdmin) {
+    return (
+      <div className="min-h-screen bg-[#FFF9EC] flex items-center justify-center p-6">
+        <div className="w-full max-w-md bg-white rounded-3xl border border-[#E8DEC8] p-7 text-center space-y-4 shadow-sm">
+          <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <h1 className="text-xl font-bold text-[#0B3B36]">এই পোর্টালটি শুধু অ্যাডমিনের জন্য</h1>
+          <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
+            <button
+              type="button"
+              onClick={() => navigatePublic('/', 'landing')}
+              className="flex-1 min-h-[44px] px-4 py-2.5 rounded-xl bg-[#0F766E] text-white text-sm font-bold hover:bg-[#0B3B36]"
+            >
+              ড্যাশবোর্ডে ফিরুন
+            </button>
+            <button
+              type="button"
+              onClick={() => void signOutUser()}
+              className="flex-1 min-h-[44px] px-4 py-2.5 rounded-xl border border-[#DDD2BC] text-[#142523] text-sm font-bold hover:bg-[#FFF9EC]"
+            >
+              লগআউট করুন
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 
@@ -211,16 +366,13 @@ const DashboardShell: React.FC = () => {
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:inset-y-0 bg-white border-r border-slate-200/80 z-30">
         <div className="h-16 px-5 flex items-center gap-3 border-b border-slate-100">
-          <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shadow-xs shrink-0">
-            <ShieldCheck className="w-5 h-5" />
-          </div>
           <div className="min-w-0">
-            <div className="text-base font-bold text-slate-900 leading-tight truncate">
-              PayVerify BD
-            </div>
-            <div className="text-[11px] text-slate-500 truncate">
-              {selectedStore?.name || account?.displayName || 'মার্চেন্ট'}
-            </div>
+            <PayVerifyBrandMark
+              logoUrl={platformConfig.brandLogoUrl}
+              logoDataUrl={platformConfig.brandLogoDataUrl}
+              variant="dark"
+              size="sm"
+            />
           </div>
         </div>
 
@@ -320,10 +472,12 @@ const DashboardShell: React.FC = () => {
       {/* Mobile Top Bar */}
       <header className="lg:hidden sticky top-0 z-30 h-14 bg-white border-b border-slate-200/80 px-4 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-teal-600 text-white flex items-center justify-center shrink-0">
-            <ShieldCheck className="w-4 h-4" />
-          </div>
-          <span className="text-base font-bold text-slate-900 truncate">PayVerify BD</span>
+          <PayVerifyBrandMark
+            logoUrl={platformConfig.brandLogoUrl}
+            logoDataUrl={platformConfig.brandLogoDataUrl}
+            variant="dark"
+            size="sm"
+          />
         </div>
 
         <div className="flex items-center gap-2">
@@ -497,8 +651,21 @@ const DashboardShell: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'overview' && <OverviewView onNavigate={(t) => selectTab(t)} />}
-          {activeTab === 'sessions' && <SessionsView />}
+          {activeTab === 'overview' && (
+            <OverviewView
+              onNavigate={(t) => selectTab(t)}
+              onStartTestVerification={() => {
+                setAutoOpenTestModal(true);
+                selectTab('sessions');
+              }}
+            />
+          )}
+          {activeTab === 'sessions' && (
+            <SessionsView
+              autoOpenTestModal={autoOpenTestModal}
+              onConsumedAutoOpen={() => setAutoOpenTestModal(false)}
+            />
+          )}
           {activeTab === 'unmatched_sms' && <UnmatchedSmsView />}
           {activeTab === 'sms' && <TransactionsView />}
           {activeTab === 'payment_page' && <PaymentPageSettingsView />}

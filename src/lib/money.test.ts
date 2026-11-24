@@ -124,3 +124,57 @@ test('Overview metrics and 7-day bar chart aggregate real Firestore records accu
   assert.equal(days[5].totalPaisa, 50_000);
   assert.equal(days[0].totalPaisa, 0);
 });
+
+test('Test sessions (isTest: true) and simulated SMS NEVER count in revenue, paid counts, or 7-day charts', () => {
+  const now = new Date('2026-11-23T14:00:00').getTime();
+  const sessions: PaySessionDoc[] = [
+    {
+      id: 'test_paid_1',
+      accountId: 'acc_1',
+      storeId: 'store_1',
+      orderId: 'TEST-1',
+      method: 'bkash',
+      number: '01711223344',
+      amountPaisa: 500_000,
+      payablePaisa: 500_000,
+      status: 'paid',
+      trxId: 'SIMABC123',
+      sender: '01711009988',
+      createdAtMs: now - 10_000,
+      expiresAtMs: now + 890_000,
+      paidAtMs: now - 5_000,
+      source: 'kenax',
+      isTest: true,
+      testType: 'simulation',
+      testResult: 'verified_simulated',
+      simulated: true,
+      webhookFired: false,
+    },
+  ];
+  const simSms: PaySmsDoc[] = [
+    {
+      id: 'sim_sms_1',
+      accountId: 'acc_1',
+      method: 'bkash',
+      amountPaisa: 500_000,
+      sender: '01711009988',
+      trxId: 'SIMABC123',
+      smsTimeMs: now,
+      receivedAtMs: now,
+      raw: 'Simulated SMS',
+      matched: false,
+      matchResult: 'unmatched',
+      sessionId: 'test_paid_1',
+      simulated: true,
+    },
+  ];
+
+  const metrics = computeDashboardMetrics(sessions, simSms, now);
+  assert.equal(metrics.todayTotalPaisa, 0);
+  assert.equal(metrics.todayMatchedCount, 0);
+  assert.equal(metrics.unmatchedSmsCount, 0);
+
+  const days = computeLast7DaysPaid(sessions, now);
+  assert.equal(days.reduce((sum, d) => sum + d.totalPaisa, 0), 0);
+});
+

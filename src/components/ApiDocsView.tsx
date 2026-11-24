@@ -82,12 +82,23 @@ $response = json_decode(curl_exec($ch), true);`,
   "status": "waiting" | "paid" | "expired" | "cancelled",
   "method": "bkash",
   "number": "01711223344",
+  "numberType": "personal" | "agent",
+  "actionType": "send_money" | "cash_in" | "cash_out" | "payment",
+  "customInstruction": "",
   "payablePaisa": 125037,
   "expiresAt": 1764000900000,
   "trxId": "BK99887766",
   "storeName": "${selectedStore?.name || 'Your Store'}",
   "logoUrl": "https://your-site.com/logo.png",
   "accentColor": "#0F766E",
+  "methodNumbers": {
+    "bkash": {
+      "number": "01711223344",
+      "type": "personal",
+      "actionType": "send_money",
+      "customInstruction": ""
+    }
+  },
   "successUrl": "https://your-site.com/order/ORD-1001/success",
   "failUrl": "https://your-site.com/order/ORD-1001/failed"
 }`;

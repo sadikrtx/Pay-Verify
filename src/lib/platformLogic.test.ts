@@ -4,6 +4,8 @@ import {
   canCreateAnotherStore,
   computeSetupChecklist,
   computeSuperAdminNotifications,
+  computeTodayStoreStats,
+  countSessionsToday,
   evaluateAccountPlan,
   evaluateDeviceFreshness,
   generatePaidSessionsCsv,
@@ -273,3 +275,38 @@ test('generatePaidSessionsCsv filters paid sessions by date range and neutralize
   assert.ok(csv.includes('1250.50'));
   assert.ok(!csv.includes('ORD-2'));
 });
+
+test('Test sessions (isTest: true) NEVER count in daily plan quota, store sales totals, or CSV exports', () => {
+  const testPaid: PaySessionDoc = {
+    id: 't_quota_1',
+    accountId: 'acc_1',
+    storeId: 'store_1',
+    orderId: 'TEST-Q1',
+    method: 'nagad',
+    number: '01811223344',
+    amountPaisa: 250_000,
+    payablePaisa: 250_000,
+    status: 'paid',
+    trxId: 'SIMQUOTA1',
+    sender: '01811009988',
+    createdAtMs: NOW - 10_000,
+    expiresAtMs: NOW + 890_000,
+    paidAtMs: NOW - 5_000,
+    source: 'kenax',
+    isTest: true,
+    testType: 'simulation',
+    testResult: 'verified_simulated',
+    simulated: true,
+    webhookFired: false,
+  };
+
+  assert.equal(countSessionsToday([testPaid], NOW), 0);
+  const stats = computeTodayStoreStats([testPaid], NOW);
+  assert.equal(stats.sessionsToday, 0);
+  assert.equal(stats.paidTodayCount, 0);
+  assert.equal(stats.paidTodayPaisa, 0);
+
+  const { rowCount } = generatePaidSessionsCsv([testPaid], '2026-11-01', '2026-11-30');
+  assert.equal(rowCount, 0);
+});
+

@@ -115,3 +115,23 @@ test('firestore.rules allows merchant branding fields and prevents silent Super 
   assert.match(activityBlock, /incoming\(\)\.type == 'branding_change'/);
 });
 
+test('firestore.rules restricts simulated SMS and simulated verification strictly to isTest == true sessions', () => {
+  assert.match(rules, /incoming\(\)\.simulated == true/);
+  assert.match(rules, /incoming\(\)\.trxId\.matches\('\^SIM\[A-Z0-9_\\\\-\]\+\$'\)/);
+
+  const sessionsBlock = rules.slice(
+    rules.indexOf('match /paySessions/{sessionId}'),
+    rules.indexOf('match /paySms/{smsId}')
+  );
+  assert.match(sessionsBlock, /existing\(\)\.isTest == true/);
+  assert.match(sessionsBlock, /incoming\(\)\.webhookFired == false/);
+
+  const smsBlock = rules.slice(
+    rules.indexOf('match /paySms/{smsId}'),
+    rules.indexOf('match /usedTrxIds/{trxId}')
+  );
+  assert.match(smsBlock, /data\.isTest == true/);
+  assert.match(smsBlock, /incoming\(\)\.simulated == true/);
+});
+
+

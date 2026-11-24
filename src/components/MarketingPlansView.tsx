@@ -6,7 +6,8 @@ import {
   formatLimitBn,
   formatPlanPriceBn,
 } from '../lib/planEngine';
-import type { PayPlanDoc } from '../types/payment';
+import { WALLET_METHODS, type PayPlanDoc } from '../types/payment';
+import { PaymentLogo } from './PaymentLogo';
 
 interface MarketingPlansViewProps {
   onBack?: () => void;
@@ -85,10 +86,20 @@ export const MarketingPlansView: React.FC<MarketingPlansViewProps> = ({
           )}
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
             প্ল্যান ও মূল্য তালিকা
           </h1>
+          <div
+            className="flex flex-wrap items-center gap-2"
+            data-testid="marketing-payment-strip"
+            aria-label="সমর্থিত পেমেন্ট মাধ্যম"
+          >
+            <span className="text-xs font-semibold text-slate-500 mr-1">সমর্থিত মাধ্যম:</span>
+            {WALLET_METHODS.map((method) => (
+              <PaymentLogo key={method} method={method} size="md" />
+            ))}
+          </div>
         </div>
 
         {visibleMarketingPlans.length === 0 ? (
