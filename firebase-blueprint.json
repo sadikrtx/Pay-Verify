@@ -1,0 +1,360 @@
+{
+  "entities": {
+    "PayPlatformConfig": {
+      "title": "PayPlatformConfig",
+      "description": "Platform-wide configuration edited only by the Super Admin (Worker URL, legacy migration state, default trialPlanId, designated subscriptionStoreId, and plan seeding state).",
+      "type": "object",
+      "properties": {
+        "workerBaseUrl": { "type": "string", "maxLength": 256 },
+        "migratedFromSettingsMain": { "type": "boolean" },
+        "migratedStoreId": { "type": "string", "maxLength": 128 },
+        "trialPlanId": { "type": "string", "maxLength": 128 },
+        "subscriptionStoreId": { "type": "string", "maxLength": 128 },
+        "plansSeeded": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["workerBaseUrl", "updatedAt"]
+    },
+    "PayDirectoryEntry": {
+      "title": "PayDirectoryEntry",
+      "description": "Zero-PII SHA-256(email) -> accountId lookup document allowing store owners to add members by exact email without listing accounts.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 80 }
+      },
+      "required": ["accountId", "displayName"]
+    },
+    "PayPlan": {
+      "title": "PayPlan",
+      "description": "Owner-defined subscription plan replacing fixed tiers. 0 in numeric limits means unlimited; 0/null in price means price not set.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 80 },
+        "priceMonthly": { "type": "integer" },
+        "priceYearly": { "type": "integer" },
+        "storeLimit": { "type": "integer" },
+        "dailySessionCap": { "type": "integer" },
+        "deviceLimit": { "type": "integer" },
+        "features": { "type": "object" },
+        "customPerks": { "type": "array" },
+        "visibleOnMarketing": { "type": "boolean" },
+        "highlight": { "type": "boolean" },
+        "archived": { "type": "boolean" },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "name",
+        "priceMonthly",
+        "priceYearly",
+        "storeLimit",
+        "dailySessionCap",
+        "deviceLimit",
+        "features",
+        "customPerks",
+        "visibleOnMarketing",
+        "highlight",
+        "archived",
+        "sortOrder",
+        "createdAt"
+      ]
+    },
+    "PayAddon": {
+      "title": "PayAddon",
+      "description": "Super Admin defined add-on pack (+store, +device, +dailySessions) that accounts can purchase until paidUntil.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 80 },
+        "kind": { "type": "string", "enum": ["+store", "+device", "+dailySessions"] },
+        "amount": { "type": "integer" },
+        "price": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "kind", "amount", "price", "active", "sortOrder", "createdAt"]
+    },
+    "PayCoupon": {
+      "title": "PayCoupon",
+      "description": "Super Admin created discount coupon code. Document ID is uppercase coupon code so clients can exact-get preview without listing.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 32, "pattern": "^[A-Z0-9_\\-]{3,32}$" },
+        "percentOff": { "type": "integer" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "maxUses": { "type": "integer" },
+        "planId": { "type": "string", "maxLength": 128 },
+        "usedCount": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "percentOff", "maxUses", "usedCount", "active", "createdAt"]
+    },
+    "PairingToken": {
+      "title": "PairingToken",
+      "description": "Single-use 10-minute pairing token binding an Android SMS app directly to one account.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 64 },
+        "accountId": { "type": "string", "maxLength": 128 },
+        "deviceName": { "type": "string", "maxLength": 64 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "usedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "accountId", "expiresAt", "usedAt", "createdAt"]
+    },
+    "PayChangelog": {
+      "title": "PayChangelog",
+      "description": "Short Bangla changelog entry authored exclusively by Super Admin and readable by all signed-in accounts.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 120 },
+        "body": { "type": "string", "maxLength": 600 },
+        "date": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "body", "date", "createdAt"]
+    },
+    "PayAccount": {
+      "title": "PayAccount",
+      "description": "Merchant or Super Admin account with live planId, per-account overrides, ownedAddons, trial/paid dates, and changelog/revocation timestamps.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 160 },
+        "displayName": { "type": "string", "maxLength": 80 },
+        "isSuperAdmin": { "type": "boolean" },
+        "planStatus": { "type": "string", "enum": ["trial", "active", "suspended"] },
+        "planTier": { "type": "string", "enum": ["basic", "pro"] },
+        "planId": { "type": "string", "maxLength": 128 },
+        "trialEndsAt": { "type": "string", "format": "date-time" },
+        "paidUntil": { "type": "string", "format": "date-time" },
+        "dailySessionCap": { "type": "integer" },
+        "dailySessionCapOverride": { "type": "integer" },
+        "storeLimitOverride": { "type": "integer" },
+        "ownedAddons": { "type": "array" },
+        "lastChangelogReadAt": { "type": "string", "format": "date-time" },
+        "tokensRevokedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "displayName", "isSuperAdmin", "planStatus", "planTier", "trialEndsAt", "dailySessionCap", "createdAt"]
+    },
+    "PayStore": {
+      "title": "PayStore",
+      "description": "Tenant store with wallet numbers, multi-number Personal/Agent payment accounts, Bangla/English branding, uploaded or linked logo, webhook config, store key hash, and shared memberRoles.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 80 },
+        "nameEn": { "type": "string", "maxLength": 80 },
+        "type": { "type": "string", "enum": ["own", "customer"] },
+        "numbers": { "type": "object" },
+        "numberEnabled": { "type": "object" },
+        "paymentAccounts": { "type": "object" },
+        "uniquePaisa": { "type": "boolean" },
+        "sessionMinutes": { "type": "integer" },
+        "storeKeyHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "storeKeyLegacy": { "type": "boolean" },
+        "webhookUrl": { "type": "string", "maxLength": 512 },
+        "webhookSecretHash": { "type": "string", "maxLength": 64 },
+        "webhookSecretSet": { "type": "boolean" },
+        "lastWebhook": { "type": "object" },
+        "logoUrl": { "type": "string", "maxLength": 512 },
+        "logoDataUrl": { "type": "string", "maxLength": 65000 },
+        "accentColor": { "type": "string", "maxLength": 16 },
+        "memberRoles": { "type": "object" },
+        "memberEmails": { "type": "object" },
+        "memberUids": { "type": "array" },
+        "liveConfirmedManually": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["accountId", "name", "type", "numbers", "numberEnabled", "uniquePaisa", "sessionMinutes", "storeKeyHash", "webhookUrl", "webhookSecretSet", "createdAt", "updatedAt"]
+    },
+    "PayActivity": {
+      "title": "PayActivity",
+      "description": "Immutable audit trail for Super Admin actions, account login events, device_rejected server alerts, and coupon redemptions.",
+      "type": "object",
+      "properties": {
+        "actorAccountId": { "type": "string", "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 160 },
+        "accountId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "maxLength": 48 },
+        "action": { "type": "string", "maxLength": 64 },
+        "targetType": { "type": "string", "enum": ["account", "store", "platform", "plan", "addon", "coupon", "changelog", "device", "session"] },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "detail": { "type": "string", "maxLength": 400 },
+        "note": { "type": "string", "maxLength": 300 },
+        "ip": { "type": "string", "maxLength": 64 },
+        "deviceInfo": { "type": "string", "maxLength": 200 },
+        "deviceFingerprint": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorAccountId", "action", "targetType", "targetId", "detail", "note", "createdAt"]
+    },
+    "PaySession": {
+      "title": "PaySession",
+      "description": "Payment checkout session scoped to accountId and storeId with integer paisa amounts and optional subscription receipt linkage.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "maxLength": 128 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 64 },
+        "method": { "type": "string", "enum": ["bkash", "nagad", "rocket", "upay"] },
+        "number": { "type": "string", "maxLength": 16 },
+        "amountPaisa": { "type": "integer" },
+        "payablePaisa": { "type": "integer" },
+        "status": { "type": "string", "enum": ["waiting", "paid", "expired", "cancelled"] },
+        "trxId": { "type": "string", "maxLength": 64 },
+        "sender": { "type": "string", "maxLength": 32 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "paidAt": { "type": "string", "format": "date-time" },
+        "source": { "type": "string", "enum": ["kenax", "manual"] },
+        "manual": { "type": "boolean" },
+        "manualNote": { "type": "string", "maxLength": 200 },
+        "successUrl": { "type": "string", "maxLength": 512 },
+        "failUrl": { "type": "string", "maxLength": 512 },
+        "memberUids": { "type": "array" },
+        "subscriptionRefAccountId": { "type": "string", "maxLength": 128 },
+        "subscriptionItemName": { "type": "string", "maxLength": 120 },
+        "subscriptionItemType": { "type": "string", "enum": ["plan", "addon"] },
+        "subscriptionResultingPaidUntil": { "type": "string", "format": "date-time" },
+        "couponCode": { "type": "string", "maxLength": 32 }
+      },
+      "required": ["orderId", "method", "number", "amountPaisa", "payablePaisa", "status", "createdAt", "expiresAt", "source"]
+    },
+    "PaySms": {
+      "title": "PaySms",
+      "description": "Incoming payment SMS ingested by Cloudflare Worker, scoped to accountId.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "maxLength": 128 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "method": { "type": "string", "enum": ["bkash", "nagad", "rocket", "upay"] },
+        "amountPaisa": { "type": "integer" },
+        "sender": { "type": "string", "maxLength": 32 },
+        "trxId": { "type": "string", "maxLength": 64 },
+        "smsTime": { "type": "string" },
+        "receivedAt": { "type": "string", "format": "date-time" },
+        "raw": { "type": "string", "maxLength": 1000 },
+        "matchResult": { "type": "string", "enum": ["matched", "unmatched", "duplicate_trxid", "late"] },
+        "matched": { "type": "boolean" },
+        "dismissed": { "type": "boolean" },
+        "sessionId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["method", "amountPaisa", "sender", "trxId", "smsTime", "receivedAt", "raw", "matchResult"]
+    },
+    "UsedTrxId": {
+      "title": "UsedTrxId",
+      "description": "Worker-only replay-protection ledger (zero client read/write access).",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "maxLength": 128 },
+        "method": { "type": "string", "enum": ["bkash", "nagad", "rocket", "upay"] },
+        "amount": { "type": "integer" },
+        "usedAt": { "type": "string", "format": "date-time" },
+        "sessionId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["method", "amount", "usedAt", "sessionId"]
+    },
+    "PayDevice": {
+      "title": "PayDevice",
+      "description": "Hard-bound account-scoped Android SMS forwarder device storing SHA-256 keyHash, installId, model, pairedAt, and lastSeenAt.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "maxLength": 128 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 64 },
+        "model": { "type": "string", "maxLength": 80 },
+        "installId": { "type": "string", "maxLength": 128 },
+        "keyHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "pairedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastSeen": { "type": "string", "format": "date-time" },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "keyHash", "createdAt", "active"]
+    },
+    "PaySettingsLegacy": {
+      "title": "PaySettingsLegacy",
+      "description": "Legacy Prompt A0 singleton settings document read once by Super Admin for idempotent migration.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "storeName": { "type": "string", "maxLength": 80 },
+        "workerBaseUrl": { "type": "string", "maxLength": 256 }
+      },
+      "required": ["ownerUid"]
+    }
+  },
+  "firestore": {
+    "/payPlatform/{docId}": {
+      "schema": { "$ref": "#/entities/PayPlatformConfig" },
+      "description": "Platform-wide configuration (docId = config); readable by signed-in users, writable only by Super Admin."
+    },
+    "/payDirectory/{emailHash}": {
+      "schema": { "$ref": "#/entities/PayDirectoryEntry" },
+      "description": "SHA-256(lowercase email) -> accountId lookup (exact get only, no list, zero PII)."
+    },
+    "/payPlans/{planId}": {
+      "schema": { "$ref": "#/entities/PayPlan" },
+      "description": "Owner-defined subscription plans; visible plans readable on marketing page and by signed-in merchants; writes strictly Super Admin only; archive-only (no delete)."
+    },
+    "/payAddons/{addonId}": {
+      "schema": { "$ref": "#/entities/PayAddon" },
+      "description": "Owner-defined add-on packs; active add-ons readable by signed-in merchants; writes strictly Super Admin only."
+    },
+    "/payCoupons/{couponId}": {
+      "schema": { "$ref": "#/entities/PayCoupon" },
+      "description": "Discount coupons keyed by uppercase code; exact get by signed-in users for preview only (no list scraping); writes strictly Super Admin only."
+    },
+    "/pairingTokens/{tokenId}": {
+      "schema": { "$ref": "#/entities/PairingToken" },
+      "description": "Single-use 10-minute device pairing tokens; owner-created with usedAt=null, immutable from client (Worker redeems)."
+    },
+    "/payChangelog/{entryId}": {
+      "schema": { "$ref": "#/entities/PayChangelog" },
+      "description": "Platform changelog entries readable by signed-in accounts; writes strictly Super Admin only."
+    },
+    "/payAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/PayAccount" },
+      "description": "Merchant and Super Admin accounts; isolated to self or Super Admin."
+    },
+    "/payStores/{storeId}": {
+      "schema": { "$ref": "#/entities/PayStore" },
+      "description": "Multi-tenant stores with primary owner accountId and memberRoles RBAC."
+    },
+    "/payActivity/{entryId}": {
+      "schema": { "$ref": "#/entities/PayActivity" },
+      "description": "Audit log: Super Admin reads/writes all; account owners read only their own accountId entries and may create only type='login' entries for themselves."
+    },
+    "/paySessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/PaySession" },
+      "description": "Store payment sessions; isolated by accountId, memberUids, or subscriptionRefAccountId (receipts); Super Admin read-only for other accounts."
+    },
+    "/paySms/{smsId}": {
+      "schema": { "$ref": "#/entities/PaySms" },
+      "description": "Account-scoped payment SMS inbox; Worker-created, owner match/dismiss only; Super Admin cannot edit other accounts' SMS."
+    },
+    "/usedTrxIds/{trxId}": {
+      "schema": { "$ref": "#/entities/UsedTrxId" },
+      "description": "Strictly Worker-only replay protection table; zero client read/write."
+    },
+    "/payDevices/{deviceId}": {
+      "schema": { "$ref": "#/entities/PayDevice" },
+      "description": "Hard-bound account-scoped paired Android devices."
+    },
+    "/paySettings/{docId}": {
+      "schema": { "$ref": "#/entities/PaySettingsLegacy" },
+      "description": "Legacy Prompt A0 settings singleton (Super Admin read-only for migration)."
+    }
+  }
+}

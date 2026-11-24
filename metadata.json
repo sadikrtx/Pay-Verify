@@ -1,0 +1,6 @@
+{
+  "name": "PayVerify",
+  "description": "Personal payment verification dashboard and hosted checkout for bKash, Nagad, Rocket, and Upay with integer-paisa matching and Firestore persistence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

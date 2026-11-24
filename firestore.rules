@@ -1,0 +1,819 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Pillar 0: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ─── Primitive Helpers ──────────────────────────────────────────────
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSha256(val) {
+      return val is string && val.size() == 64 && val.matches('^[a-f0-9]{64}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Designated verified Super Admin (zero DB reads; safe in allow list & single-doc ops)
+    function isSuperAdmin() {
+      return isSignedIn()
+        && request.auth.token.email == 'sadikrtx3060@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+
+    function isStorePrimaryOwner(s) {
+      return s.accountId == request.auth.uid;
+    }
+
+    function isStoreMember(s) {
+      return s.keys().hasAny(['memberRoles'])
+        && s.memberRoles is map
+        && request.auth.uid in s.memberRoles;
+    }
+
+    function storeMemberRole(s) {
+      return isStoreMember(s) ? s.memberRoles[request.auth.uid] : '';
+    }
+
+    function isValidWalletMethod(m) {
+      return m in ['bkash', 'nagad', 'rocket', 'upay'];
+    }
+
+    function isValidOptionalBdPhone(p) {
+      return p is string && (p == '' || (p.size() == 11 && p.matches('^01[3-9][0-9]{8}$')));
+    }
+
+    function isValidNumbersMap(m) {
+      return m is map
+        && m.keys().hasAll(['bkash', 'nagad', 'rocket', 'upay'])
+        && m.keys().hasOnly(['bkash', 'nagad', 'rocket', 'upay'])
+        && isValidOptionalBdPhone(m.bkash)
+        && isValidOptionalBdPhone(m.nagad)
+        && isValidOptionalBdPhone(m.rocket)
+        && isValidOptionalBdPhone(m.upay);
+    }
+
+    function isValidNumberEnabledMap(m) {
+      return m is map
+        && m.keys().hasAll(['bkash', 'nagad', 'rocket', 'upay'])
+        && m.keys().hasOnly(['bkash', 'nagad', 'rocket', 'upay'])
+        && m.bkash is bool
+        && m.nagad is bool
+        && m.rocket is bool
+        && m.upay is bool;
+    }
+
+    function isBoundedMethodAccountList(arr) {
+      return arr is list
+        && arr.size() <= 10
+        && (arr.size() == 0 || arr[0] is map);
+    }
+
+    function isValidPaymentAccountsMap(m) {
+      return m is map
+        && m.keys().hasAll(['bkash', 'nagad', 'rocket'])
+        && m.keys().hasOnly(['bkash', 'nagad', 'rocket'])
+        && isBoundedMethodAccountList(m.bkash)
+        && isBoundedMethodAccountList(m.nagad)
+        && isBoundedMethodAccountList(m.rocket);
+    }
+
+    function isBoundedUidList(arr) {
+      return arr is list
+        && arr.size() <= 25
+        && (arr.size() == 0 || (arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 128));
+    }
+
+    function isBoundedPerksList(arr) {
+      return arr is list
+        && arr.size() <= 20
+        && (arr.size() == 0 || (arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 160));
+    }
+
+    function isBoundedOwnedAddonsList(arr) {
+      return arr is list
+        && arr.size() <= 25
+        && (arr.size() == 0 || arr[0] is map);
+    }
+
+    function isValidPlanFeatures(f) {
+      return f is map
+        && f.keys().hasAll([
+          'rotation', 'branding', 'embedded', 'apiAccess', 'woocommerce',
+          'analytics', 'csvExport', 'manualMatch', 'members'
+        ])
+        && f.keys().hasOnly([
+          'rotation', 'branding', 'embedded', 'apiAccess', 'woocommerce',
+          'analytics', 'csvExport', 'manualMatch', 'members'
+        ])
+        && f.rotation is bool
+        && f.branding is bool
+        && f.embedded is bool
+        && f.apiAccess is bool
+        && f.woocommerce is bool
+        && f.analytics is bool
+        && f.csvExport is bool
+        && f.manualMatch is bool
+        && f.members is int && f.members >= 0 && f.members <= 100;
+    }
+
+    // ─── Validation Blueprints (Anti-Update-Gap) ────────────────────────
+
+    function isValidPayPlatform(data) {
+      return data.keys().hasAll(['workerBaseUrl', 'updatedAt'])
+        && data.keys().hasOnly([
+          'workerBaseUrl', 'migratedFromSettingsMain', 'migratedStoreId',
+          'trialPlanId', 'subscriptionStoreId', 'plansSeeded', 'updatedAt'
+        ])
+        && data.workerBaseUrl is string && data.workerBaseUrl.size() <= 256
+        && (!data.keys().hasAny(['migratedFromSettingsMain']) || data.migratedFromSettingsMain is bool)
+        && (!data.keys().hasAny(['migratedStoreId']) || data.migratedStoreId == null || (data.migratedStoreId is string && data.migratedStoreId.size() <= 128))
+        && (!data.keys().hasAny(['trialPlanId']) || data.trialPlanId == null || (data.trialPlanId is string && data.trialPlanId.size() <= 128))
+        && (!data.keys().hasAny(['subscriptionStoreId']) || data.subscriptionStoreId == null || (data.subscriptionStoreId is string && data.subscriptionStoreId.size() <= 128))
+        && (!data.keys().hasAny(['plansSeeded']) || data.plansSeeded is bool)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayDirectory(data) {
+      return data.keys().hasAll(['accountId', 'displayName'])
+        && data.keys().hasOnly(['accountId', 'displayName'])
+        && data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128
+        && data.displayName is string && data.displayName.size() <= 80;
+    }
+
+    function isValidPayPlan(data) {
+      return data.keys().hasAll([
+          'name', 'priceMonthly', 'priceYearly', 'storeLimit',
+          'dailySessionCap', 'deviceLimit', 'features', 'customPerks',
+          'visibleOnMarketing', 'highlight', 'archived', 'sortOrder', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'priceMonthly', 'priceYearly', 'storeLimit',
+          'dailySessionCap', 'deviceLimit', 'features', 'customPerks',
+          'visibleOnMarketing', 'highlight', 'archived', 'sortOrder', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && (data.priceMonthly == null || (data.priceMonthly is int && data.priceMonthly >= 0 && data.priceMonthly <= 100000000))
+        && (data.priceYearly == null || (data.priceYearly is int && data.priceYearly >= 0 && data.priceYearly <= 1000000000))
+        && data.storeLimit is int && data.storeLimit >= 0 && data.storeLimit <= 10000
+        && data.dailySessionCap is int && data.dailySessionCap >= 0 && data.dailySessionCap <= 1000000
+        && data.deviceLimit is int && data.deviceLimit >= 0 && data.deviceLimit <= 1000
+        && isValidPlanFeatures(data.features)
+        && isBoundedPerksList(data.customPerks)
+        && data.visibleOnMarketing is bool
+        && data.highlight is bool
+        && data.archived is bool
+        && data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000
+        && data.createdAt is timestamp
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp);
+    }
+
+    function isValidPayAddon(data) {
+      return data.keys().hasAll(['name', 'kind', 'amount', 'price', 'active', 'sortOrder', 'createdAt'])
+        && data.keys().hasOnly(['name', 'kind', 'amount', 'price', 'active', 'sortOrder', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.kind in ['+store', '+device', '+dailySessions']
+        && data.amount is int && data.amount >= 1 && data.amount <= 100000
+        && data.price is int && data.price >= 0 && data.price <= 100000000
+        && data.active is bool
+        && data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000
+        && data.createdAt is timestamp
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp);
+    }
+
+    function isValidPayCoupon(data) {
+      return data.keys().hasAll(['code', 'percentOff', 'maxUses', 'usedCount', 'active', 'createdAt'])
+        && data.keys().hasOnly([
+          'code', 'percentOff', 'expiresAt', 'maxUses', 'planId',
+          'usedCount', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.code is string && data.code.size() >= 3 && data.code.size() <= 32 && data.code.matches('^[A-Z0-9_\\-]+$')
+        && data.percentOff is int && data.percentOff >= 1 && data.percentOff <= 100
+        && (!data.keys().hasAny(['expiresAt']) || data.expiresAt == null || data.expiresAt is timestamp || data.expiresAt is int)
+        && data.maxUses is int && data.maxUses >= 0 && data.maxUses <= 1000000
+        && (!data.keys().hasAny(['planId']) || data.planId == null || (data.planId is string && data.planId.size() <= 128))
+        && data.usedCount is int && data.usedCount >= 0 && data.usedCount <= 1000000
+        && data.active is bool
+        && data.createdAt is timestamp
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp);
+    }
+
+    function isValidPairingToken(data) {
+      return data.keys().hasAll(['code', 'accountId', 'expiresAt', 'usedAt', 'createdAt'])
+        && data.keys().hasOnly(['code', 'accountId', 'deviceName', 'expiresAt', 'usedAt', 'createdAt'])
+        && data.code is string && data.code.size() >= 6 && data.code.size() <= 64
+        && data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128
+        && (!data.keys().hasAny(['deviceName']) || (data.deviceName is string && data.deviceName.size() <= 64))
+        && (data.expiresAt is timestamp || data.expiresAt is int)
+        && (data.usedAt == null || data.usedAt is timestamp || data.usedAt is int)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidPayChangelog(data) {
+      return data.keys().hasAll(['title', 'body', 'date', 'createdAt'])
+        && data.keys().hasOnly(['title', 'body', 'date', 'createdAt', 'updatedAt'])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 600
+        && data.date is string && data.date.size() >= 4 && data.date.size() <= 40
+        && data.createdAt is timestamp
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp);
+    }
+
+    function isValidPayAccount(data) {
+      return data.keys().hasAll([
+          'email', 'displayName', 'isSuperAdmin', 'planStatus',
+          'planTier', 'trialEndsAt', 'paidUntil', 'dailySessionCap', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'email', 'displayName', 'isSuperAdmin', 'planStatus',
+          'planTier', 'planId', 'trialEndsAt', 'paidUntil',
+          'dailySessionCap', 'dailySessionCapOverride', 'storeLimitOverride',
+          'ownedAddons', 'lastChangelogReadAt', 'tokensRevokedAt',
+          'createdAt', 'updatedAt'
+        ])
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.displayName is string && data.displayName.size() <= 80
+        && data.isSuperAdmin is bool
+        && data.planStatus in ['trial', 'active', 'suspended']
+        && data.planTier in ['basic', 'pro']
+        && (!data.keys().hasAny(['planId']) || data.planId == null || (data.planId is string && data.planId.size() <= 128))
+        && (data.trialEndsAt is timestamp || data.trialEndsAt is int)
+        && (data.paidUntil == null || data.paidUntil is timestamp || data.paidUntil is int)
+        && data.dailySessionCap is int && data.dailySessionCap >= 0 && data.dailySessionCap <= 1000000
+        && (!data.keys().hasAny(['dailySessionCapOverride']) || data.dailySessionCapOverride == null || (data.dailySessionCapOverride is int && data.dailySessionCapOverride >= 0 && data.dailySessionCapOverride <= 1000000))
+        && (!data.keys().hasAny(['storeLimitOverride']) || data.storeLimitOverride == null || (data.storeLimitOverride is int && data.storeLimitOverride >= 0 && data.storeLimitOverride <= 10000))
+        && (!data.keys().hasAny(['ownedAddons']) || isBoundedOwnedAddonsList(data.ownedAddons))
+        && (!data.keys().hasAny(['lastChangelogReadAt']) || data.lastChangelogReadAt == null || data.lastChangelogReadAt is timestamp || data.lastChangelogReadAt is int)
+        && (!data.keys().hasAny(['tokensRevokedAt']) || data.tokensRevokedAt == null || data.tokensRevokedAt is timestamp || data.tokensRevokedAt is int)
+        && data.createdAt is timestamp
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp);
+    }
+
+    function isValidPayStore(data) {
+      return data.keys().hasAll([
+          'accountId', 'name', 'type', 'numbers', 'numberEnabled',
+          'uniquePaisa', 'sessionMinutes', 'storeKeyHash',
+          'webhookUrl', 'webhookSecretSet', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'accountId', 'name', 'nameEn', 'type', 'numbers', 'numberEnabled',
+          'paymentAccounts', 'uniquePaisa', 'sessionMinutes', 'storeKeyHash', 'storeKeyLegacy',
+          'webhookUrl', 'webhookSecretHash', 'webhookSecretSet', 'lastWebhook',
+          'logoUrl', 'logoDataUrl', 'accentColor', 'memberRoles', 'memberEmails', 'memberUids',
+          'liveConfirmedManually', 'createdAt', 'updatedAt'
+        ])
+        && data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && (!data.keys().hasAny(['nameEn']) || (data.nameEn is string && data.nameEn.size() <= 80))
+        && data.type in ['own', 'customer']
+        && isValidNumbersMap(data.numbers)
+        && isValidNumberEnabledMap(data.numberEnabled)
+        && (!data.keys().hasAny(['paymentAccounts']) || isValidPaymentAccountsMap(data.paymentAccounts))
+        && data.uniquePaisa is bool
+        && data.sessionMinutes is int && data.sessionMinutes >= 5 && data.sessionMinutes <= 120
+        && isValidSha256(data.storeKeyHash)
+        && (!data.keys().hasAny(['storeKeyLegacy']) || data.storeKeyLegacy is bool)
+        && data.webhookUrl is string && data.webhookUrl.size() <= 512
+        && (!data.keys().hasAny(['webhookSecretHash']) || data.webhookSecretHash == '' || isValidSha256(data.webhookSecretHash))
+        && data.webhookSecretSet is bool
+        && (!data.keys().hasAny(['lastWebhook']) || data.lastWebhook == null || data.lastWebhook is map)
+        && (!data.keys().hasAny(['logoUrl']) || (data.logoUrl is string && data.logoUrl.size() <= 512))
+        && (!data.keys().hasAny(['logoDataUrl']) || (data.logoDataUrl is string && data.logoDataUrl.size() <= 65000))
+        && (!data.keys().hasAny(['accentColor']) || (data.accentColor is string && data.accentColor.size() <= 16))
+        && (!data.keys().hasAny(['memberRoles']) || (data.memberRoles is map && data.memberRoles.size() <= 25))
+        && (!data.keys().hasAny(['memberEmails']) || (data.memberEmails is map && data.memberEmails.size() <= 25))
+        && (!data.keys().hasAny(['memberUids']) || isBoundedUidList(data.memberUids))
+        && (!data.keys().hasAny(['liveConfirmedManually']) || data.liveConfirmedManually is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayActivity(data) {
+      return data.keys().hasAll([
+          'actorAccountId', 'action', 'targetType', 'targetId', 'detail', 'note', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'actorAccountId', 'actorEmail', 'accountId', 'type', 'action',
+          'targetType', 'targetId', 'detail', 'note',
+          'ip', 'deviceInfo', 'deviceFingerprint', 'createdAt'
+        ])
+        && data.actorAccountId is string && data.actorAccountId.size() >= 1 && data.actorAccountId.size() <= 128
+        && (!data.keys().hasAny(['actorEmail']) || (data.actorEmail is string && data.actorEmail.size() <= 160))
+        && (!data.keys().hasAny(['accountId']) || (data.accountId is string && data.accountId.size() <= 128))
+        && (!data.keys().hasAny(['type']) || (data.type is string && data.type.size() <= 48))
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 64
+        && data.targetType in ['account', 'store', 'platform', 'plan', 'addon', 'coupon', 'changelog', 'device', 'session']
+        && data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128
+        && data.detail is string && data.detail.size() <= 400
+        && data.note is string && data.note.size() >= 1 && data.note.size() <= 300
+        && (!data.keys().hasAny(['ip']) || data.ip == null || (data.ip is string && data.ip.size() <= 64))
+        && (!data.keys().hasAny(['deviceInfo']) || data.deviceInfo == null || (data.deviceInfo is string && data.deviceInfo.size() <= 200))
+        && (!data.keys().hasAny(['deviceFingerprint']) || data.deviceFingerprint == null || (data.deviceFingerprint is string && data.deviceFingerprint.size() <= 64))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidPaySession(data) {
+      return data.keys().hasAll([
+          'orderId', 'method', 'number', 'amountPaisa', 'payablePaisa',
+          'status', 'createdAt', 'expiresAt', 'source'
+        ])
+        && data.keys().hasOnly([
+          'accountId', 'storeId', 'orderId', 'method', 'number', 'amountPaisa', 'payablePaisa',
+          'status', 'trxId', 'sender', 'createdAt', 'expiresAt', 'paidAt',
+          'source', 'manual', 'manualNote', 'successUrl', 'failUrl', 'memberUids', 'ownerUid',
+          'subscriptionRefAccountId', 'subscriptionItemName', 'subscriptionItemType',
+          'subscriptionResultingPaidUntil', 'couponCode'
+        ])
+        && (!data.keys().hasAny(['accountId']) || (data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128))
+        && (!data.keys().hasAny(['storeId']) || (data.storeId is string && data.storeId.size() >= 1 && data.storeId.size() <= 128))
+        && data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 64
+        && isValidWalletMethod(data.method)
+        && data.number is string && data.number.size() <= 16
+        && data.amountPaisa is int && data.amountPaisa >= 100 && data.amountPaisa <= 100000000
+        && data.payablePaisa is int && data.payablePaisa >= 100 && data.payablePaisa <= 100000099
+        && data.status in ['waiting', 'paid', 'expired', 'cancelled']
+        && (!data.keys().hasAny(['trxId']) || data.trxId == null || (data.trxId is string && data.trxId.size() <= 64))
+        && (!data.keys().hasAny(['sender']) || data.sender == null || (data.sender is string && data.sender.size() <= 32))
+        && (data.createdAt is timestamp || data.createdAt is int)
+        && (data.expiresAt is timestamp || data.expiresAt is int)
+        && (!data.keys().hasAny(['paidAt']) || data.paidAt == null || data.paidAt is timestamp || data.paidAt is int)
+        && data.source in ['kenax', 'manual']
+        && (!data.keys().hasAny(['manual']) || data.manual is bool)
+        && (!data.keys().hasAny(['manualNote']) || (data.manualNote is string && data.manualNote.size() <= 200))
+        && (!data.keys().hasAny(['successUrl']) || data.successUrl == null || (data.successUrl is string && data.successUrl.size() <= 512))
+        && (!data.keys().hasAny(['failUrl']) || data.failUrl == null || (data.failUrl is string && data.failUrl.size() <= 512))
+        && (!data.keys().hasAny(['memberUids']) || isBoundedUidList(data.memberUids))
+        && (!data.keys().hasAny(['ownerUid']) || (data.ownerUid is string && data.ownerUid.size() <= 128))
+        && (!data.keys().hasAny(['subscriptionRefAccountId']) || data.subscriptionRefAccountId == null || (data.subscriptionRefAccountId is string && data.subscriptionRefAccountId.size() <= 128))
+        && (!data.keys().hasAny(['subscriptionItemName']) || data.subscriptionItemName == null || (data.subscriptionItemName is string && data.subscriptionItemName.size() <= 120))
+        && (!data.keys().hasAny(['subscriptionItemType']) || data.subscriptionItemType == null || data.subscriptionItemType in ['plan', 'addon'])
+        && (!data.keys().hasAny(['subscriptionResultingPaidUntil']) || data.subscriptionResultingPaidUntil == null || data.subscriptionResultingPaidUntil is timestamp || data.subscriptionResultingPaidUntil is int)
+        && (!data.keys().hasAny(['couponCode']) || data.couponCode == null || (data.couponCode is string && data.couponCode.size() <= 32));
+    }
+
+    function isValidPaySms(data) {
+      return data.keys().hasAll([
+          'method', 'amountPaisa', 'sender', 'trxId', 'smsTime',
+          'receivedAt', 'raw', 'matchResult'
+        ])
+        && data.keys().hasOnly([
+          'accountId', 'storeId', 'method', 'amountPaisa', 'sender', 'trxId', 'smsTime',
+          'receivedAt', 'raw', 'matchResult', 'matched', 'dismissed', 'sessionId', 'ownerUid'
+        ])
+        && (!data.keys().hasAny(['accountId']) || (data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128))
+        && (!data.keys().hasAny(['storeId']) || data.storeId == null || (data.storeId is string && data.storeId.size() <= 128))
+        && isValidWalletMethod(data.method)
+        && data.amountPaisa is int && data.amountPaisa >= 1 && data.amountPaisa <= 100000099
+        && data.sender is string && data.sender.size() <= 32
+        && data.trxId is string && data.trxId.size() >= 4 && data.trxId.size() <= 64 && data.trxId.matches('^[A-Z0-9_\\-]+$')
+        && (data.smsTime is timestamp || data.smsTime is int || (data.smsTime is string && data.smsTime.size() <= 64))
+        && (data.receivedAt is timestamp || data.receivedAt is int)
+        && data.raw is string && data.raw.size() <= 1000
+        && data.matchResult in ['matched', 'unmatched', 'duplicate_trxid', 'late']
+        && (!data.keys().hasAny(['matched']) || data.matched is bool)
+        && (!data.keys().hasAny(['dismissed']) || data.dismissed is bool)
+        && (!data.keys().hasAny(['sessionId']) || data.sessionId == null || (data.sessionId is string && data.sessionId.size() <= 128))
+        && (!data.keys().hasAny(['ownerUid']) || (data.ownerUid is string && data.ownerUid.size() <= 128));
+    }
+
+    function isValidPayDevice(data) {
+      return data.keys().hasAll(['name', 'keyHash', 'createdAt', 'active'])
+        && data.keys().hasOnly([
+          'accountId', 'storeId', 'name', 'model', 'installId',
+          'keyHash', 'pairedAt', 'createdAt', 'lastSeen', 'lastSeenAt', 'active', 'ownerUid'
+        ])
+        && (!data.keys().hasAny(['accountId']) || (data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128))
+        && (!data.keys().hasAny(['storeId']) || data.storeId == null || (data.storeId is string && data.storeId.size() <= 128))
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 64
+        && (!data.keys().hasAny(['model']) || data.model == null || (data.model is string && data.model.size() <= 80))
+        && (!data.keys().hasAny(['installId']) || data.installId == null || (data.installId is string && data.installId.size() <= 128))
+        && isValidSha256(data.keyHash)
+        && (!data.keys().hasAny(['pairedAt']) || data.pairedAt == null || data.pairedAt is timestamp || data.pairedAt is int)
+        && data.createdAt is timestamp
+        && (!data.keys().hasAny(['lastSeen']) || data.lastSeen == null || data.lastSeen is timestamp)
+        && (!data.keys().hasAny(['lastSeenAt']) || data.lastSeenAt == null || data.lastSeenAt is timestamp)
+        && data.active is bool
+        && (!data.keys().hasAny(['ownerUid']) || (data.ownerUid is string && data.ownerUid.size() <= 128));
+    }
+
+    // ─── Collection Rules (Strict Multi-Tenant Isolation) ───────────────
+
+    match /payPlatform/{docId} {
+      allow get: if docId == 'config' && isSignedIn();
+      allow list: if false;
+      allow create, update: if docId == 'config'
+        && isValidPayPlatform(incoming())
+        && isSuperAdmin()
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /payDirectory/{emailHash} {
+      allow get: if isValidSha256(emailHash) && isSignedIn();
+      allow list: if false;
+      allow create, update: if isValidSha256(emailHash)
+        && isValidPayDirectory(incoming())
+        && isSignedIn()
+        && incoming().accountId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /payPlans/{planId} {
+      // Visible marketing plans are readable publicly; active plans readable by signed-in merchants; all readable by Super Admin
+      allow get: if isValidId(planId) && (
+        existing().visibleOnMarketing == true ||
+        isSignedIn()
+      );
+      allow list: if resource.data.visibleOnMarketing == true
+        || (isSignedIn() && resource.data.archived == false)
+        || isSuperAdmin();
+      allow create: if isValidId(planId)
+        && isValidPayPlan(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(planId)
+        && isValidPayPlan(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'priceMonthly', 'priceYearly', 'storeLimit', 'dailySessionCap',
+          'deviceLimit', 'features', 'customPerks', 'visibleOnMarketing',
+          'highlight', 'archived', 'sortOrder', 'updatedAt'
+        ]);
+      // Archive only — never delete a plan
+      allow delete: if false;
+    }
+
+    match /payAddons/{addonId} {
+      allow get: if isValidId(addonId) && (
+        isSuperAdmin() ||
+        (isSignedIn() && existing().active == true)
+      );
+      allow list: if isSuperAdmin()
+        || (isSignedIn() && resource.data.active == true);
+      allow create: if isValidId(addonId)
+        && isValidPayAddon(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(addonId)
+        && isValidPayAddon(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'kind', 'amount', 'price', 'active', 'sortOrder', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /payCoupons/{couponId} {
+      // Exact-code lookup for preview only; merchants can NEVER list/scrape coupon codes
+      allow get: if isValidId(couponId) && (
+        isSuperAdmin() ||
+        (isSignedIn() && existing().active == true)
+      );
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(couponId)
+        && isValidPayCoupon(incoming())
+        && isSuperAdmin()
+        && incoming().code == couponId
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(couponId)
+        && isValidPayCoupon(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().code == existing().code
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'percentOff', 'expiresAt', 'maxUses', 'planId', 'usedCount', 'active', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /pairingTokens/{tokenId} {
+      allow get: if isValidId(tokenId) && isSignedIn() && (
+        existing().accountId == request.auth.uid || isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.accountId == request.auth.uid || isSuperAdmin()
+      );
+      allow create: if isValidId(tokenId)
+        && isValidPairingToken(incoming())
+        && isSignedIn()
+        && incoming().accountId == request.auth.uid
+        && incoming().usedAt == null
+        && incoming().createdAt == request.time;
+      // Immutable from client: Worker redeems single-use token atomically
+      allow update, delete: if false;
+    }
+
+    match /payChangelog/{entryId} {
+      allow get: if isValidId(entryId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.createdAt != null;
+      allow create: if isValidId(entryId)
+        && isValidPayChangelog(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(entryId)
+        && isValidPayChangelog(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'body', 'date', 'updatedAt'
+        ]);
+      allow delete: if isValidId(entryId) && isSuperAdmin();
+    }
+
+    match /payAccounts/{accountId} {
+      allow get: if isValidId(accountId) && isSignedIn()
+        && (accountId == request.auth.uid || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(accountId)
+        && isValidPayAccount(incoming())
+        && isSignedIn()
+        && accountId == request.auth.uid
+        && incoming().createdAt == request.time
+        && (
+          (isSuperAdmin() && incoming().isSuperAdmin == true) ||
+          (!isSuperAdmin()
+            && incoming().isSuperAdmin == false
+            && incoming().planStatus == 'trial'
+            && incoming().planTier == 'basic'
+            && (!incoming().keys().hasAny(['planId']) || incoming().planId == null)
+            && incoming().paidUntil == null
+            && (!incoming().keys().hasAny(['storeLimitOverride']) || incoming().storeLimitOverride == null)
+            && (!incoming().keys().hasAny(['dailySessionCapOverride']) || incoming().dailySessionCapOverride == null)
+            && (!incoming().keys().hasAny(['ownedAddons']) || incoming().ownedAddons.size() == 0))
+        );
+      allow update: if isValidId(accountId)
+        && isValidPayAccount(incoming())
+        && isSignedIn()
+        && incoming().createdAt == existing().createdAt
+        && incoming().email == existing().email
+        && incoming().isSuperAdmin == existing().isSuperAdmin
+        && (
+          // Account holder can only update displayName, lastChangelogReadAt, tokensRevokedAt
+          (accountId == request.auth.uid
+            && incoming().planStatus == existing().planStatus
+            && incoming().planTier == existing().planTier
+            && incoming().paidUntil == existing().paidUntil
+            && incoming().trialEndsAt == existing().trialEndsAt
+            && incoming().dailySessionCap == existing().dailySessionCap
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'lastChangelogReadAt', 'tokensRevokedAt', 'updatedAt'
+            ])) ||
+          // Super Admin can manage planId, planStatus, planTier, paidUntil, overrides, ownedAddons
+          (isSuperAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'planId', 'planStatus', 'planTier', 'paidUntil',
+              'dailySessionCap', 'dailySessionCapOverride', 'storeLimitOverride',
+              'ownedAddons', 'updatedAt'
+            ]))
+        );
+      allow delete: if false;
+    }
+
+    match /payStores/{storeId} {
+      allow get: if isValidId(storeId) && isSignedIn()
+        && (isStorePrimaryOwner(existing()) || isStoreMember(existing()) || isSuperAdmin());
+      allow list: if isSignedIn() && (
+        resource.data.accountId == request.auth.uid ||
+        (resource.data.keys().hasAny(['memberUids']) && resource.data.memberUids is list && request.auth.uid in resource.data.memberUids) ||
+        isSuperAdmin()
+      );
+      allow create: if isValidId(storeId)
+        && isValidPayStore(incoming())
+        && isSignedIn()
+        && incoming().accountId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (incoming().type == 'customer' || isSuperAdmin());
+      allow update: if isValidId(storeId)
+        && isValidPayStore(incoming())
+        && isSignedIn()
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isStorePrimaryOwner(existing())
+            && incoming().accountId == existing().accountId
+            && incoming().type == existing().type
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'nameEn', 'numbers', 'numberEnabled', 'paymentAccounts',
+              'uniquePaisa', 'sessionMinutes',
+              'storeKeyHash', 'storeKeyLegacy', 'webhookUrl', 'webhookSecretHash', 'webhookSecretSet',
+              'logoUrl', 'logoDataUrl', 'accentColor', 'memberRoles', 'memberEmails', 'memberUids',
+              'liveConfirmedManually', 'updatedAt'
+            ])) ||
+          (storeMemberRole(existing()) == 'co-owner'
+            && incoming().accountId == existing().accountId
+            && incoming().type == existing().type
+            && incoming().storeKeyHash == existing().storeKeyHash
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'nameEn', 'numbers', 'numberEnabled', 'paymentAccounts',
+              'uniquePaisa', 'sessionMinutes',
+              'webhookUrl', 'webhookSecretHash', 'webhookSecretSet',
+              'logoUrl', 'logoDataUrl', 'accentColor', 'liveConfirmedManually', 'updatedAt'
+            ])) ||
+          (isSuperAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'type', 'accountId', 'memberRoles', 'memberEmails', 'memberUids', 'updatedAt'
+            ]))
+        );
+      allow delete: if isValidId(storeId) && isSignedIn()
+        && (isStorePrimaryOwner(existing()) || isSuperAdmin());
+    }
+
+    match /paySessions/{sessionId} {
+      // Strictly tenant-isolated; also allows account to read its own subscription receipts
+      allow get: if isValidId(sessionId) && isSignedIn() && (
+        (existing().keys().hasAny(['accountId']) && existing().accountId == request.auth.uid) ||
+        (existing().keys().hasAny(['subscriptionRefAccountId']) && existing().subscriptionRefAccountId == request.auth.uid) ||
+        (existing().keys().hasAny(['storeId']) && isValidId(existing().storeId)
+          && exists(/databases/$(database)/documents/payStores/$(existing().storeId))
+          && isStoreMember(get(/databases/$(database)/documents/payStores/$(existing().storeId)).data)) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid) ||
+        (resource.data.keys().hasAny(['subscriptionRefAccountId']) && resource.data.subscriptionRefAccountId == request.auth.uid) ||
+        (resource.data.keys().hasAny(['memberUids']) && resource.data.memberUids is list && request.auth.uid in resource.data.memberUids) ||
+        isSuperAdmin()
+      );
+      allow create: if isValidId(sessionId)
+        && isValidPaySession(incoming())
+        && isSignedIn()
+        && incoming().status == 'waiting'
+        && incoming().keys().hasAny(['storeId']) && isValidId(incoming().storeId)
+        && exists(/databases/$(database)/documents/payStores/$(incoming().storeId))
+        && (
+          get(/databases/$(database)/documents/payStores/$(incoming().storeId)).data.accountId == request.auth.uid ||
+          storeMemberRole(get(/databases/$(database)/documents/payStores/$(incoming().storeId)).data) == 'co-owner'
+        )
+        && incoming().accountId == get(/databases/$(database)/documents/payStores/$(incoming().storeId)).data.accountId;
+      allow update: if isValidId(sessionId)
+        && isValidPaySession(incoming())
+        && isSignedIn()
+        && (
+          // One-time idempotent legacy backfill only when accountId/storeId missing
+          (isSuperAdmin()
+            && (!existing().keys().hasAny(['accountId']) || !existing().keys().hasAny(['storeId']))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['accountId', 'storeId'])) ||
+          // Tenant owner or store co-owner / manager (Super Admin CANNOT edit another account's sessions)
+          (existing().keys().hasAny(['accountId']) && existing().keys().hasAny(['storeId'])
+            && isValidId(existing().storeId)
+            && exists(/databases/$(database)/documents/payStores/$(existing().storeId))
+            && incoming().accountId == existing().accountId
+            && incoming().storeId == existing().storeId
+            && (
+              ((existing().accountId == request.auth.uid
+                || storeMemberRole(get(/databases/$(database)/documents/payStores/$(existing().storeId)).data) == 'co-owner')
+                && (
+                  (existing().status == 'waiting' && incoming().status == 'paid'
+                    && incoming().diff(existing()).affectedKeys().hasOnly([
+                      'status', 'trxId', 'sender', 'paidAt', 'manual', 'manualNote', 'source'
+                    ])) ||
+                  (existing().status == 'waiting' && incoming().status == 'cancelled'
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['status']))
+                )) ||
+              (storeMemberRole(get(/databases/$(database)/documents/payStores/$(existing().storeId)).data) == 'manager'
+                && existing().status == 'waiting' && incoming().status == 'paid'
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'trxId', 'sender', 'paidAt', 'manual', 'manualNote', 'source'
+                ])) ||
+              (existing().accountId == request.auth.uid
+                && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids']))
+            ))
+        );
+      allow delete: if false;
+    }
+
+    match /paySms/{smsId} {
+      allow get: if isValidId(smsId) && isSignedIn() && (
+        (existing().keys().hasAny(['accountId']) && existing().accountId == request.auth.uid) ||
+        (isSuperAdmin() && !existing().keys().hasAny(['accountId']))
+      );
+      allow list: if isSignedIn() && (
+        (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid) ||
+        (isSuperAdmin() && !resource.data.keys().hasAny(['accountId']))
+      );
+      allow create: if false; // Written exclusively by Cloudflare Worker
+      allow update: if isValidId(smsId)
+        && isValidPaySms(incoming())
+        && isSignedIn()
+        && (
+          (isSuperAdmin()
+            && !existing().keys().hasAny(['accountId'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['accountId'])) ||
+          (existing().keys().hasAny(['accountId'])
+            && existing().accountId == request.auth.uid
+            && incoming().accountId == existing().accountId
+            && (existing().matchResult == 'unmatched' || existing().matched == false)
+            && incoming().matchResult == 'matched'
+            && incoming().matched == true
+            && incoming().sessionId is string && incoming().sessionId.size() >= 1
+            && incoming().diff(existing()).affectedKeys().hasOnly(['matchResult', 'matched', 'sessionId'])) ||
+          (existing().keys().hasAny(['accountId'])
+            && existing().accountId == request.auth.uid
+            && incoming().accountId == existing().accountId
+            && incoming().dismissed == true
+            && incoming().diff(existing()).affectedKeys().hasOnly(['dismissed']))
+        );
+      allow delete: if false;
+    }
+
+    match /usedTrxIds/{trxId} {
+      // Strictly Worker-only: zero client read/write access
+      allow read, write: if false;
+    }
+
+    match /payDevices/{deviceId} {
+      allow get: if isValidId(deviceId) && isSignedIn() && (
+        (existing().keys().hasAny(['accountId']) && existing().accountId == request.auth.uid) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid) ||
+        isSuperAdmin()
+      );
+      allow create: if isValidId(deviceId)
+        && isValidPayDevice(incoming())
+        && isSignedIn()
+        && incoming().accountId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(deviceId)
+        && isValidPayDevice(incoming())
+        && isSignedIn()
+        && (
+          (isSuperAdmin()
+            && (!existing().keys().hasAny(['accountId']) || !existing().keys().hasAny(['storeId']))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['accountId', 'storeId'])) ||
+          (existing().keys().hasAny(['accountId'])
+            && existing().accountId == request.auth.uid
+            && incoming().accountId == existing().accountId
+            && incoming().createdAt == existing().createdAt
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly(['active', 'keyHash']) ||
+              incoming().diff(existing()).affectedKeys().hasOnly(['active'])
+            ))
+        );
+      allow delete: if isValidId(deviceId) && isSignedIn()
+        && existing().keys().hasAny(['accountId'])
+        && existing().accountId == request.auth.uid;
+    }
+
+    match /payActivity/{entryId} {
+      // Super Admin reads all; account owners read only their own accountId entries (login history & device_rejected alerts)
+      allow get: if isValidId(entryId) && isSignedIn() && (
+        isSuperAdmin() ||
+        (existing().keys().hasAny(['accountId']) && existing().accountId == request.auth.uid)
+      );
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid)
+      );
+      allow create: if isValidId(entryId)
+        && isValidPayActivity(incoming())
+        && isSignedIn()
+        && incoming().actorAccountId == request.auth.uid
+        && incoming().createdAt == request.time
+        && (
+          isSuperAdmin() ||
+          (incoming().keys().hasAny(['type'])
+            && incoming().type == 'login'
+            && incoming().keys().hasAny(['accountId'])
+            && incoming().accountId == request.auth.uid
+            && incoming().targetType == 'account'
+            && incoming().targetId == request.auth.uid) ||
+          (incoming().keys().hasAny(['type'])
+            && incoming().type == 'branding_change'
+            && incoming().keys().hasAny(['accountId'])
+            && incoming().accountId == request.auth.uid
+            && incoming().targetType == 'store'
+            && isValidId(incoming().targetId)
+            && exists(/databases/$(database)/documents/payStores/$(incoming().targetId))
+            && (isStorePrimaryOwner(get(/databases/$(database)/documents/payStores/$(incoming().targetId)).data)
+              || storeMemberRole(get(/databases/$(database)/documents/payStores/$(incoming().targetId)).data) == 'co-owner'))
+        );
+      allow update, delete: if false;
+    }
+
+    // Legacy Prompt A0 singleton kept read-only for Super Admin idempotent migration
+    match /paySettings/{docId} {
+      allow get: if docId == 'main' && isSuperAdmin();
+      allow list, create, update, delete: if false;
+    }
+  }
+}

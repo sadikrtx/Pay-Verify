@@ -1,0 +1,141 @@
+====================================================================
+FILE 10 — HOSTED PAYMENT PAGE UI DESIGN (WEB APP PROJECT ONLY)
+Project: PayVerify web app (the website / server project — NOT the Android app)
+Purpose: Design and build the hosted payment page that a customer lands on
+after clicking "Pay" on any merchant's website (e.g. KenaX BD or any buyer
+of this system). The look and flow must feel like SSLCommerz's hosted
+checkout: clean, trusted, method-branded screens. Every merchant's page is
+branded with THEIR OWN store name, logo and mobile banking numbers, which
+the merchant sets from their own dashboard.
+====================================================================
+
+BACKGROUND (already built — do not rebuild)
+- The payment session is created by the merchant's website: it tells the
+  server "this order/invoice expects this amount", and the customer is sent
+  to this hosted payment page with that session.
+- Verification is server-side: the customer sends money by Send Money and
+  enters the Transaction ID; the server matches amount + TrxID against the
+  SMS received by the merchant's paired Android phone. Do NOT change that
+  matching logic in this prompt — this prompt is the payment page UI and
+  its flow only.
+- Each merchant (tenant) sees only their own data. Branding and numbers
+  always come from the SESSION's merchant — never from another merchant,
+  never hard-coded.
+
+PART A — MERCHANT SETTINGS (dashboard: "পেমেন্ট পেজ সেটিংস")
+Add a settings section in the merchant dashboard where the merchant
+controls what their payment page shows:
+1. Store name (Bangla and English) shown on the payment page.
+2. Store logo: upload or image URL. If no logo, show the store name in a
+   clean styled badge instead — never a broken image.
+3. Payment methods ON/OFF per method: bKash, Nagad, Rocket.
+4. One or more numbers per method (number rotation already exists in the
+   system — the page shows the number the server assigns to this session).
+5. Each number labelled Personal / Agent as stored.
+6. A "প্রিভিউ" button that opens the merchant's own payment page in a safe
+   preview mode (clearly marked প্রিভিউ, creates no real session).
+7. Saving takes effect immediately for new sessions.
+The system owner (Super Admin) can view, but not silently edit, a
+merchant's branding; any owner-side change is written to the activity log.
+
+PART B — THE HOSTED PAYMENT PAGE (customer-facing)
+Overall layout, SSLCommerz-style:
+- A centred card on a soft, light background; mobile-first responsive —
+  on phones the card fills the screen cleanly; on desktop it sits centred
+  with the order summary visible.
+- Top of the card: the MERCHANT's logo + store name (from Part A), and a
+  small lock line "নিরাপদ পেমেন্ট" — nothing else. No extra subtitles,
+  no marketing text.
+- Order summary strip: merchant store name, order/invoice number, and the
+  exact payable amount in big clear figures (৳ with Bangla numerals where
+  the rest of the UI uses them). The amount is LOCKED — it comes from the
+  session and the customer can never edit it.
+- A visible session countdown (the payment window). When it expires, the
+  page shows an honest "সময় শেষ" state with a button back to the store —
+  no fake extension of time.
+
+Step 1 — Choose method ("পেমেন্ট মাধ্যম বেছে নিন"):
+- One tappable card per ENABLED method, each in its own brand look:
+  bKash (pink #E2136E family), Nagad (orange), Rocket (purple) — logo,
+  name, and a one-line hint of the merchant's number type (Personal/Agent).
+- A method the merchant has OFF never appears.
+- Cancel link at the bottom: "বাতিল করে দোকানে ফিরুন" → returns to the
+  merchant site with a cancelled status.
+
+Step 2 — The method screen (bKash described; Nagad/Rocket identical in
+structure with their own colours and names):
+- The whole screen takes the method's brand colour theme (bKash = the
+  familiar bKash pink screen, exactly the feel of the bKash step inside
+  SSLCommerz).
+- Big, clear display of the number to send money to, with a one-tap
+  "কপি করুন" (copy) button and a copied confirmation tick.
+- The exact amount to send, big: "এই নম্বরে ৳___ সেন্ড মানি করুন".
+- Step-by-step instructions in short clean Bangla (numbered, 3–4 steps:
+  open the bKash app / dial code, choose Send Money, enter the number and
+  amount, note the Transaction ID). Keep the steps generic and correct —
+  do not invent menu codes that may be wrong; app-based steps are fine.
+- Then two fields: "Transaction ID" and "যে নম্বর থেকে পাঠিয়েছেন" (the
+  sender's own number). Both required; gentle inline validation (TrxID
+  format hint under the field).
+- One clear button: "ভেরিফাই করুন".
+- A small honest line under the button: verification is automatic and
+  usually takes a few moments.
+
+Step 3 — Result states (all on the same page, no dead ends):
+- যাচাই হচ্ছে: a calm waiting state with animation and the line
+  "আপনার পেমেন্ট যাচাই করা হচ্ছে…" — it polls the server; it must NOT
+  claim success before the server confirms.
+- সফল: green success screen with a big tick, amount + method + TrxID
+  shown, then AUTOMATIC redirect back to the merchant's website after a
+  short countdown, plus a "এখনই ফিরে যান" button. The merchant site
+  receives the success status (existing webhook/return flow).
+- ব্যর্থ / মেলেনি: a clear, kind failure screen — what likely went wrong
+  (wrong TrxID, amount mismatch, TrxID already used) in plain Bangla,
+  with "আবার চেষ্টা করুন" returning to Step 2 with the fields editable,
+  and a way back to the store. Never blame the customer harshly. If the
+  customer gives up, or the session window ends while in a failed state,
+  the page AUTOMATICALLY redirects back to the merchant's website
+  carrying the failure status — exactly as success auto-redirects and
+  cancel returns immediately with a cancelled status — so the customer
+  is never left stranded on this page.
+- The result (success or failure, with reason) is recorded against the
+  session so it appears in the merchant's dashboard transaction list and
+  in the owner's admin view — same single record, no duplicates.
+
+DESIGN RULES (apply everywhere on this page)
+- Clean, trusted, professional — the customer must feel this is a real
+  payment page of that store. No clutter, no extra text, no subtitles.
+- All customer-facing text in clean Bangla (method names and "Transaction
+  ID" stay as-is, as customers know them that way).
+- Fully responsive: mobile and desktop pixel-clean; tap targets large;
+  the TrxID field must be easy on a phone keyboard (text input, no
+  auto-capitalisation issues).
+- Footer, small and quiet: "Secured by PayVerify" (system brand) — the
+  merchant's own branding always dominates the page, never the system's.
+- Accessibility basics: sufficient contrast on the brand-coloured
+  screens (white text on bKash pink must be readable), focus states on
+  fields and buttons.
+- The page must load fast and standalone — no heavy libraries for this
+  page; it is the one page a customer must never abandon because it is
+  slow.
+
+HARD RULES
+- Never show another merchant's name, logo or numbers. If the session's
+  merchant data is missing, show a neutral page with an honest error —
+  never fall back to a different merchant or to demo data.
+- Never invent a payment result: the success screen appears ONLY after
+  the server confirms the SMS match.
+- Test/preview sessions are marked TEST and never mixed with real
+  transactions, as elsewhere in this system.
+- Do not change the server matching logic, the Android app, plans, or
+  subscriptions in this prompt.
+
+DELIVERABLE / REPORT BACK
+After building, report in Bangla, briefly:
+1. Which files/screens were created or changed.
+2. A screenshot-style description of each screen: method choice, bKash,
+   Nagad, Rocket, waiting, success, failure — confirming the merchant's
+   own name/logo/numbers appear from their settings.
+3. TypeScript / build result.
+4. Anything you could not build exactly as specified, stated honestly.
+====================================================================

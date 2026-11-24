@@ -1,0 +1,47 @@
+# Prompt A2 — PayVerify BD UPGRADE 2: Plan System + Hard Device Binding + Login Security
+Paste into the EXISTING PayVerify BD web project (the one already upgraded with Prompt A1). Prepared 2026-11-24. This prompt ADDS the features below on top of A1 — it does not rebuild or remove anything A1 built. Where A1 already created something named here, extend it; never create a duplicate.
+
+---
+
+CONTEXT: A1 made the app multi-tenant (payAccounts, payStores, payDevices with accountId, Super Admin panel, trial → manual activation). This upgrade adds: (1) an owner-built subscription PLAN SYSTEM replacing A1's fixed basic/pro tiers, (2) HARD DEVICE BINDING so one account can only ever run on its own registered phones, (3) login/session security, (4) a changelog page, (5) subscription payment history with receipts. All UI text in Bangla, no subtitles, mobile + desktop responsive. Do not change any stored data except the explicit migration in §1. Do not touch the payment page, session flow, or SMS ingestion behaviour except where §2 requires the server contract to be recognised (the Worker changes are delivered separately — this app only needs the UI and data described).
+
+## 1) PLAN SYSTEM — plans are data the owner creates (replaces fixed tiers)
+- New collection payPlans/{planId}: { name, priceMonthly, priceYearly (0 = not offered), storeLimit, dailySessionCap, deviceLimit, features { rotation, branding, embedded, apiAccess, woocommerce, analytics, csvExport, manualMatch, members (0|2|5) }, customPerks [owner-typed display-only text lines], visibleOnMarketing, highlight (bool), archived (bool), sortOrder, createdAt }.
+- Seed exactly three plans ONCE (idempotent — if payPlans already has any doc, seed nothing): "স্টার্টার" (1 store, 1 device, cap 100/day, manualMatch ON, everything else OFF, members 0), "স্ট্যান্ডার্ড" (3 stores, 1 device, cap 500/day, branding/rotation/embedded/analytics/csvExport/manualMatch ON, apiAccess/woocommerce OFF, members 2), "ভিআইপি / মাস্টার" (10 stores, 3 devices, cap 2000/day, ALL features ON, members 5). Prices start EMPTY (0/null → shown as "দাম সেট করা হয়নি") — never invent a price.
+- payAccounts gains planId (nullable). MIGRATION (idempotent): accounts with planTier "basic" and no planId → planId of স্টার্টার; planTier "pro" → স্ট্যান্ডার্ড; the super admin's own account → ভিআইপি / মাস্টার. planTier stays stored but is no longer used anywhere.
+- An account's effective limits/features resolve LIVE from its plan, except per-account overrides (existing dailySessionCap override; add storeLimitOverride) which win. Trial accounts use the plan marked as the trial plan in platform config (default স্ট্যান্ডার্ড).
+- Super Admin gains a "প্ল্যানসমূহ" screen: create a plan from scratch or by duplicating one; edit every field; reorder (sortOrder); show/hide on the marketing page; mark one as highlighted ("জনপ্রিয়"); archive a plan (archived plans block new sign-ups/renewals onto them; accounts already on them keep working until their paid period ends; a plan with accounts on it can NEVER be deleted — archive only). OWNER FREEDOM is a hard requirement: every numeric limit accepts any value including 0 = আনলিমিটেড; the owner can add new plans between existing ones at any time; nothing about the seeded plans is locked. Every create/edit/archive writes a payActivity entry.
+- Store creation beyond the account's effective storeLimit is blocked with a clean Bangla message naming the limit and the plan name.
+- GRACE: when paidUntil passes, the account enters a 3-day grace state ("গ্রেস — আর N দিন") — everything still works, dashboard shows a prominent warning banner; only after grace does the account become inactive (A1 behaviour).
+- DOWNGRADE RULE: if an account moves to a plan whose storeLimit is below the number of stores it already has, the extra stores become PAUSED — read-only, no new sessions, badged "প্ল্যান লিমিটের বাইরে — পজ" — never deleted or hidden; raising the limit unpauses them automatically.
+- MARKETING PAGE: the plan comparison table is generated from the visible payPlans (name, prices, limits, feature ticks, customPerks lines, highlighted plan badged "জনপ্রিয়") — no hard-coded tier text remains anywhere.
+- RENEWAL/UPGRADE uses plan prices: the "নবায়ন করুন" flow (A1 item 12) charges the account's plan price (or the target plan's price for an upgrade) via the designated subscription store; an upgrade applies the new plan immediately on confirmation with a fresh paid period (no pro-rata).
+
+## 2) HARD DEVICE BINDING — one account, only its own phones
+Owner's rule, verbatim intent: one person's account must never be run by 3–4 people; the web account and the Android app must be the SAME person's — the app joins the account, it is not a second account.
+- payDevices docs gain: installId (the app's stable device install id), model, pairedAt. The ফোন সংযোগ screen lists the account's registered devices (model, paired date, last seen, status chip) with a remove action per device.
+- Pairing codes/QR issued from ফোন সংযোগ are SINGLE-USE and expire after 10 minutes (store pairingTokens { code, accountId, expiresAt, usedAt } — a used or expired token can never pair again). The QR encodes the same single-use token.
+- Pairing a device beyond the account's effective deviceLimit is blocked with a Bangla message until an old device is removed. Removing a device revokes it immediately (its device key stops working).
+- The dashboard shows a notification (and the Super Admin বিজ্ঞপ্তি list shows it too) when the server reports a rejected device attempt for the account (the Worker writes these to payActivity type "device_rejected" — display them; if none exist yet, show nothing).
+- Account identity statement: the app pairs ONLY through a token issued from that account's own dashboard — there is no separate app sign-up anywhere in this system.
+
+## 3) LOGIN & SESSION SECURITY (অ্যাকাউন্ট screen)
+- Login history list (time, IP, device/browser) from Firebase Auth metadata available to the client plus app-recorded sign-in events (record each successful sign-in into payActivity type "login" with IP/device when available).
+- Active sessions list with a "সব জায়গা থেকে লগআউট করুন" action (revokes refresh tokens via the documented Firebase flow the app can perform; if full revocation needs the Worker, show the action and report honestly in your build summary what is wired vs pending).
+- A login from a new device/browser raises an in-app notification to the account owner.
+- SENSITIVE ACTIONS — store-key rotation, webhook URL/secret change, member add/remove, plan purchase/upgrade — require password re-confirmation (Firebase re-authentication) even when already signed in.
+
+## 4) ADD-ON PACKS + COUPON CODES (inside প্ল্যানসমূহ)
+- Add-ons: super admin defines add-ons { name, kind: +store|+device|+dailySessions, amount, price } in the প্ল্যানসমূহ screen. Accounts buy add-ons through the same PayVerify payment flow as renewal; owned add-ons show on the অ্যাকাউন্ট screen and count as per-account overrides until the account's paidUntil.
+- Coupon codes: super admin creates codes { code, percentOff, expiresAt, maxUses, planId (optional restriction), usedCount }. The renewal/upgrade screen accepts a code; the displayed price may preview the discount, but the FINAL price is computed and validated server-side (the app passes the code with the renewal request and never treats a browser-computed price as authoritative). Redemptions are activity-logged.
+
+## 5) SUBSCRIPTION PAYMENT HISTORY + RECEIPTS (অ্যাকাউন্ট screen)
+- List the account's confirmed subscription payments (date, plan or add-on name, amount, TrxID, resulting paidUntil) from the subscription store's confirmed sessions whose reference is this account. Each row opens a printable receipt view (platform name, account, item, amount, TrxID, date, new paid-until date).
+
+## 6) CHANGELOG PAGE ("নতুন কি এসেছে")
+- Super Admin writes short Bangla entries { title, body (1–3 lines), date } in a simple editor in the Super Admin panel (collection payChangelog). Every signed-in account sees "নতুন কি এসেছে" in its dashboard menu, newest first, with an unread dot until the page is opened. Nothing is auto-generated.
+
+## RULES
+- Server-side isolation from A1 stays absolute: plans, devices, changelog writes are super-admin only; accounts read only their own data plus the visible plans and changelog.
+- Bangla UI throughout, no subtitles, clean cards, mobile + desktop responsive.
+- Report honestly in your build summary: anything that needs the Worker (device rejection enforcement, final coupon pricing, token revocation) must be listed as "Worker-pending" rather than faked in the UI.

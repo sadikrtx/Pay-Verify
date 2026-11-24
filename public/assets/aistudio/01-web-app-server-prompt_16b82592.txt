@@ -1,0 +1,40 @@
+# Prompt A0 — Payment Web App (Dashboard + Hosted Payment Page)
+Paste into a NEW Google AI Studio project. Prepared 2026-11-23. Do NOT send until Sadik says build.
+
+---
+Build a complete web app called "PayVerify BD" — a personal payment-verification system for ONE shop owner in Bangladesh. The owner sells through his own online store; customers pay manually by bKash / Nagad / Rocket / Upay to his personal numbers; this system confirms those payments automatically. This build is the WEB part only: the owner dashboard + the customer-facing hosted payment page + the Firestore data layer. The matching brain runs in a separate Cloudflare Worker (already written separately) — this app must talk to it ONLY through the HTTP contract below and read results from Firestore. Do NOT try to match payments inside this app, do NOT invent an SMS feature here, and do NOT seed any fake/demo data anywhere.
+
+BACKEND SETUP
+- Create a NEW Firebase project for this app (its own project, never shared with any other app). Enable Firestore and Firebase Authentication (Email/Password + Google).
+- Single owner account: the first signed-in user becomes the owner; after that, sign-ups are disabled in the UI. All dashboard routes require the owner session.
+- Firestore collections (create exactly these; all documents start empty):
+  - paySettings/main: { numbers: { bkash: "", nagad: "", rocket: "", upay: "" }, uniquePaisa: false, sessionMinutes: 15, storeName: "KenaX BD", deviceConnected: false, deviceName: "", deviceLastSeen: null }
+  - paySessions/{sessionId}: { orderId, method, number, amountPaisa (integer), payablePaisa (integer), status: "waiting"|"paid"|"expired"|"cancelled", trxId: null, sender: null, createdAt, expiresAt, paidAt: null, source: "kenax"|"manual" } — ALL money is integer paisa everywhere (100 paisa = ৳1); the UI converts for display.
+  - paySms/{smsId}: { method, amountPaisa (integer), sender, trxId, smsTime, receivedAt, raw, matchResult: "matched"|"unmatched"|"duplicate_trxid"|"late", sessionId: null }
+  - usedTrxIds/{trxId}: { method, amount, usedAt, sessionId }
+  - payDevices/{deviceId}: { name, keyHash, createdAt, lastSeen, active }
+- Firestore security rules: owner-only read/write on all five collections; no public access. The public payment page must NOT read Firestore directly — it uses the Worker status endpoint below.
+
+WORKER API CONTRACT (the Worker base URL is a setting the owner can paste in Settings; store it in paySettings/main as workerBaseUrl)
+- GET {workerBaseUrl}/session/{sessionId}/status → { status, method, number, payablePaisa, expiresAt, trxId } — public, used by the payment page, poll every 3 seconds.
+- POST {workerBaseUrl}/session/create with header "x-store-key" → body { orderId, amountPaisa, method } → { sessionId, payablePaisa, number, expiresAt } — owner-only from the dashboard (manual session creation / test), never expose the store key in the payment page.
+- The dashboard NEVER calls the Worker for lists — it reads paySessions / paySms live from Firestore with snapshot listeners.
+
+OWNER DASHBOARD (Bangla-first UI, clean, soft eye-catchy colours, fully responsive mobile + desktop, NO subtitles under headings)
+1. Overview: four stat cards (আজকের মোট পেমেন্ট, আজ মিলেছে কয়টা, অপেক্ষমাণ সেশন, মেলেনি এমন SMS) computed live from Firestore; a device-status card (ফোন সংযুক্ত আছে কিনা, শেষ কখন দেখা গেছে) reading paySettings/payDevices; a small 7-day bar chart of paid amounts.
+2. লাইভ সেশন: live table of paySessions (order, method chip with the wallet's brand colour, number, amount, payable amount, countdown to expiry, status chip). Actions: cancel a waiting session; manually confirm a waiting session (with a mandatory note field — writes status "paid", paidAt, and manual flag).
+3. SMS লগ: live table of paySms with matchResult chips (মিলেছে / মেলেনি / ডুপ্লিকেট TrxID / দেরিতে এসেছে); tapping a row shows the raw SMS text; an unmatched row offers "সেশনের সাথে মিলিয়ে দাও" (pick a waiting session → writes the match exactly like the Worker would: session paid + usedTrxIds entry).
+4. পেমেন্ট নম্বর: edit the four wallet numbers + per-number on/off; toggling uniquePaisa and sessionMinutes; store name.
+5. ফোন সংযোগ: shows the connected device (name, last seen, active) and a "নতুন সংযোগ কোড" button that generates a device key — show the key ONCE in a copyable box with a QR code of { workerBaseUrl, deviceKey } for the Android app to scan; a revoke button that deactivates the device (sets active=false and rotates the accepted key hash).
+6. সেটিংস: workerBaseUrl field, KenaX webhook status display (last webhook result stored by the Worker in paySettings/main as lastWebhook), owner sign-out.
+
+CUSTOMER PAYMENT PAGE (public route /pay/:sessionId — no login)
+- Reads status from the Worker endpoint; shows: store name, the wallet logo/colour for the session method, the number BIG with a one-tap copy button, the exact payable amount (if uniquePaisa is on, show the paisa clearly with one line: "ঠিক এই পরিমাণটাই পাঠাবেন, পয়সাসহ"), a live countdown, and simple 3-step Bangla instructions (নম্বর কপি করুন → টাকা পাঠান → এই পেজেই অপেক্ষা করুন).
+- When status becomes "paid": a big green success state ("পেমেন্ট পাওয়া গেছে — ধন্যবাদ!") with the TrxID. When "expired": a clear expired state with "আবার চেষ্টা করুন" guidance. The page must never ask the customer for a TrxID or a screenshot — waiting is enough.
+- Clean, trustworthy, mobile-first design; soft colours; wallet brand colour as the accent per method.
+
+GENERAL RULES
+- All UI text in Bangla (wallet names and "TrxID" stay in English). Currency format ৳ with Bengali-style grouping.
+- No fake data, no demo buttons, no placeholder charts — every number comes from Firestore; empty collections show clean Bangla empty states.
+- End your build report with: files changed, Firestore rules summary, and the results of your TypeScript check, build, and tests.
+---

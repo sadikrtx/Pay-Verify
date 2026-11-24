@@ -1,0 +1,64 @@
+# Payment Automation (ZiniPay-style) — Master Plan
+For Sadik, personal use first (KenaX BD checkout). Decided 2026-11-23 (voice call).
+Reference audit: ~/workspace/zinipay-audit/zinipay-audit-and-build-feasibility-2026-11-23.md
+
+## Scope decisions (Sadik, 2026-11-23)
+- Build for HIMSELF first — one user, his own numbers, his own store (KenaX BD).
+- Sharing with others / public API / selling it as a digital product = LATER phase, not now.
+- Everything must be FREE: no paid apps, no Cloud Functions (Firebase Spark only), no per-transaction services.
+- The data model still carries an ownerId/brand field from day one, so the later multi-user phase needs no rebuild — but no multi-user features are built now.
+
+## The two separate builds (one system, two tracks)
+The two parts are separate projects that talk to each other over HTTPS:
+
+### Track A — Server + Web (build FIRST)
+- Web app (Google AI Studio, like KenaX): merchant dashboard + hosted payment page.
+  - Dashboard: his payment numbers (bKash/Nagad/Rocket/Upay), live sessions, transaction log (every SMS received + match result), settings.
+  - Hosted payment page: customer picks a method, sees the number + exact amount + a live countdown; page polls session status and shows "Payment confirmed" automatically.
+- Cloudflare Worker (free tier, same pattern as the KenaX integration Worker) = the brain:
+  - POST /session/create — from checkout (KenaX first; generic API shape kept for later).
+  - POST /sms/ingest — receives parsed SMS data from the Android app (device key required).
+  - Matching engine: open session for that number+method with the exact amount, not expired, TrxID never used → session PAID, TrxID burned, webhook fires to KenaX (and status flips on the payment page).
+  - GET /session/:id/status — payment page polling.
+- Firestore (Spark, free) = storage: sessions, transactions, usedTrxIds, numbers, settings. The Worker reaches Firestore by REST + service account, exactly like the KenaX Worker. NO Cloud Functions anywhere.
+
+### Track B — Android SMS Reader App (build SECOND)
+- Separate AI Studio Android project (like Rannaghar), installed on Sadik's phone by USB/APK — free, no Play Store needed for personal use.
+- Permissions: RECEIVE_SMS + READ_SMS, internet. Setup screen: paste the Worker URL + device key once.
+- On each incoming SMS from a wallet sender (bKash / Nagad / Rocket / Upay): parse amount, sender number, TrxID, time with per-wallet patterns; POST to /sms/ingest IMMEDIATELY — no batching, no waiting (Sadik's explicit demand 2026-11-23: "অফলাইনেও জমিয়ে না রেখে সাথে সাথে পাঠাই দেক"). Honest limit: with no network at all (data off + no Wi-Fi) nothing can physically send; for that case the app registers a connectivity trigger so the pending SMS goes out the very moment ANY network returns — automatic, no manual step, no periodic schedule. Uses whichever network exists (mobile data or Wi-Fi). DELIVERY GUARANTEE (Sadik, restated 2026-11-23): online or offline, every payment SMS MUST reach the server — the app keeps each parsed SMS marked "unconfirmed" until the server acknowledges receipt, and retries automatically until it gets that acknowledgement; nothing is ever dropped silently. The log screen shows any SMS still awaiting acknowledgement.
+- Foreground service with a small persistent notification so Android does not kill it; setup flow asks for battery-optimisation exemption.
+- The app does NOTHING else — no UI beyond setup + a small log of what it forwarded.
+
+## Matching rules (the heart — conservative, no false confirmations)
+1. A session exists only after checkout starts it: {number, method, amount, expiresAt ~15 min, status: waiting}.
+2. An SMS payment matches only if ALL hold: same receiving number + method, amount exactly equal, now < expiresAt, TrxID not in usedTrxIds.
+3. On match: session → paid, TrxID recorded as used forever, webhook + dashboard update. Anything else: SMS is logged as unmatched (visible in the dashboard, never auto-applied).
+4. Same-amount collision guard (optional toggle): add unique paisa to the amount (e.g. ৳1,250.37) so simultaneous identical orders cannot collide.
+5. If two waiting sessions could match one SMS (same amount, no paisa mode): match the OLDEST waiting session and flag the event in the dashboard.
+
+## How it connects to KenaX BD (Sadik asked 2026-11-23)
+Same pattern he already knows from the KenaX Integration API — an address + a secret key, both ways:
+1. KenaX → payment system: at checkout, when the customer picks bKash/Nagad/Rocket/Upay, KenaX calls POST /session/create with the order ID + total amount and gets back the payment page link (number + exact amount + countdown). Customer pays there.
+2. Payment system → KenaX: the moment a payment matches, the Worker fires a webhook to KenaX ("order KB-XXXX is PAID, method bKash, TrxID …"), signed with a shared secret so KenaX accepts only genuine calls. KenaX flips that order's PAYMENT status to Paid (payment status only — the order's fulfilment status flow stays exactly as his Order Page rules define; the two are independent).
+3. KenaX-side changes (one AI Studio prompt, later in the build order): an admin "Payment Verification" settings card (server address + store key + on/off toggle), the checkout session call, and the webhook receiver. Fallback: KenaX can also ask the payment server for an order's status if a webhook is ever missed, and the payment dashboard always shows pending/unmatched items for manual confirm.
+
+## Build order — ALL MATERIALS PREPARED 2026-11-23 (Sadik's order: prepare everything now, build only when he says; he plans to build today, 2026-11-23)
+- A0 → prompts/prompt-a0-web-app.md: AI Studio prompt for the web app (owner dashboard + hosted payment page + Firestore schema, integer-paisa money, no fake data). One build covers the dashboard AND the payment page.
+- Worker → worker/payment-worker.js: COMPLETE code written by Muse (syntax-checked OK 2026-11-23): /session/create, /session/:id/status, /sms/ingest with device-key auth (SHA-256 hash checked against active payDevices docs, so dashboard key generation/revoke is real), matching engine (oldest waiting session, exact payablePaisa, 60-min late grace flagged "late"), used-TrxID double-spend guard, KenaX webhook with shared secret, lastWebhook recorded. Deploy to Cloudflare at build time; secrets: FIREBASE_SERVICE_ACCOUNT (of the NEW PayVerify Firebase project), STORE_KEY, KENAX_WEBHOOK_SECRET; var: KENAX_WEBHOOK_URL.
+- B0 → prompts/prompt-b0-android-app.md: AI Studio prompt for the Android listener (complete in one prompt: receiver + per-wallet parsers in one file, immediate send + unconfirmed-outbox with connectivity-triggered retry until server ACK, foreground service + boot start + battery exemption, 3 Bangla screens: Setup / Home / Log).
+- K1 → prompts/prompt-k1-kenax-integration.md: KenaX-side prompt (settings card, checkout session call with manual-flow fallback, idempotent webhook receiver marking payment Paid only). Send only AFTER PayVerify is live and tested.
+- T1: End-to-end test with Sadik's own numbers: small real payments (e.g. ৳10) per wallet → session confirms; wrong-amount and reused-TrxID tests must FAIL to confirm.
+- Later (only when Sadik says): WooCommerce plugin, multi-user/API keys/subscriptions for selling.
+STATUS: nothing built, nothing deployed — awaiting Sadik's "build koro".
+
+## Free-stack check
+- Cloudflare Workers free tier: plenty for personal order volume.
+- Firestore Spark: fine at this scale.
+- Firebase Hosting (AI Studio deploy): free, as with KenaX/Shromik Sathi.
+- Android app: no cost; SMS reading is an Android system permission, not a paid service.
+- Total running cost: ৳0.
+
+## Risks kept visible
+- Phone off / app killed / no internet = SMS arrives late; sessions must tolerate late matching (log + manual confirm option in the dashboard).
+- Wallet SMS formats can change; parsers live in ONE file in the app so a fix is a small update.
+- Personal-wallet merchant use is a grey zone in wallet terms — Sadik's own business decision, noted 2026-11-23.
