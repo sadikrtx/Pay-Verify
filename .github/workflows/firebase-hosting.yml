@@ -1,0 +1,32 @@
+name: Deploy PayVerify to Firebase Hosting
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies & build production dist
+        run: |
+          npm install
+          npm run build
+
+      - name: Authenticate with Google Cloud Service Account
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PAY_VERIFY_F5ED7 }}
+
+      - name: Deploy Hosting to Firebase
+        run: npx --yes firebase-tools deploy --only hosting --project pay-verify-f5ed7 --non-interactive --force
