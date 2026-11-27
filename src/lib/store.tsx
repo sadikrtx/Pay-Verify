@@ -1795,6 +1795,8 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [platformConfig.workerBaseUrl, selectedStore]);
 
+
+
   const accountSessions = useMemo(() => {
     const map = new Map<string, PaySessionDoc>();
     for (const s of ownedSessions) map.set(s.id, s);
@@ -3603,6 +3605,20 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     },
     [account, platformConfig, selectedStore, isAutoTest]
   );
+
+  useEffect(() => {
+    if (
+      account?.isSuperAdmin &&
+      platformConfig.subscriptionStoreId &&
+      allStores.length > 0 &&
+      !allStores.some((s) => s.id === platformConfig.subscriptionStoreId)
+    ) {
+      void adminSavePlatformSettings(
+        { subscriptionStoreId: null },
+        'নির্ধারিত সাবস্ক্রিপশন স্টোর মুছে যাওয়ায় সেটিংস স্বয়ংক্রিয়ভাবে পরিষ্কার করা হয়েছে'
+      ).catch(() => {});
+    }
+  }, [account?.isSuperAdmin, platformConfig.subscriptionStoreId, allStores, adminSavePlatformSettings]);
 
   const adminSaveWorkerBaseUrl = useCallback(
     async (rawUrl: string, note = 'প্ল্যাটফর্ম Worker URL আপডেট') => {

@@ -821,6 +821,34 @@ export const SuperAdminView: React.FC = () => {
         })}
       </div>
 
+      {isSuperAdmin && !platformConfig.subscriptionStoreId && (
+        <div
+          className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs"
+          data-testid="sub-store-missing-banner"
+        >
+          <div className="flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+              <ShieldAlert className="w-5 h-5" />
+            </span>
+            <div>
+              <div className="text-sm font-bold text-amber-900">
+                সাবস্ক্রিপশন পেমেন্ট স্টোর নির্ধারণ করা হয়নি — plan বিক্রি বন্ধ আছে
+              </div>
+              <div className="text-xs text-amber-700">
+                গ্রাহকরা এখন প্ল্যান কিনতে পারছেন না। অনুগ্রহ করে অবিলম্বে একটি পেমেন্ট স্টোর সিলেক্ট করুন।
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => selectAdminTab('plans')}
+            className="px-4 py-2 rounded-xl bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 shrink-0"
+          >
+            স্টোর নির্ধারণ করুন
+          </button>
+        </div>
+      )}
+
       {globalError && (
         <div className="flex items-center gap-2 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-sm text-rose-700">
           <AlertCircle className="w-4 h-4 shrink-0" />

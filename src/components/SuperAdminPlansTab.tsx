@@ -14,12 +14,14 @@ import {
   PackagePlus,
   Plus,
   Save,
+  ShieldAlert,
   Sparkles,
   Tag,
   Trash2,
   X,
 } from 'lucide-react';
 import { usePayVerify, type AddonDraftInput, type CouponDraftInput, type PlanDraftInput } from '../lib/store';
+import { normalizePaymentAccounts } from '../lib/checkoutFlow';
 import {
   ADDON_KIND_LABELS_BN,
   PLAN_FEATURE_LABELS_BN,
@@ -448,58 +450,121 @@ export const SuperAdminPlansTab: React.FC = () => {
         </div>
       )}
 
-      {/* Trial Plan & Subscription Store Config (Super Admin only) */}
+      {/* Subscription Payment Store Settings (Super Admin only) */}
       {isSuperAdmin && (
-      <form
-        onSubmit={handleSavePlatformPlanConfig}
-        className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-4"
-      >
-        <h2 className="text-base font-bold text-slate-900">ট্রায়াল ও সাবস্ক্রিপশন স্টোর সেটিংস</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              ট্রায়াল অ্যাকাউন্টের ডিফল্ট প্ল্যান
-            </label>
-            <select
-              value={trialPlanId}
-              onChange={(e) => setTrialPlanId(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white"
-            >
-              <option value="">কোনো ফ্রি ট্রায়াল নেই (বন্ধ)</option>
-              {nonArchivedPlans.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-4" data-testid="subscription-payment-store-section">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">সাবস্ক্রিপশন পেমেন্ট</h2>
+              <p className="text-xs text-slate-500">গ্রাহকরা প্ল্যান কেনার সময় যে স্টোর ও নম্বরে পেমেন্ট করবেন</p>
+            </div>
+            {subscriptionStoreId ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                স্টোর নির্ধারণ করা আছে
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-xs font-bold text-amber-800">
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+                স্টোর নির্ধারণ করা হয়নি
+              </span>
+            )}
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              সাবস্ক্রিপশন বিলিং স্টোর
-            </label>
-            <select
-              value={subscriptionStoreId}
-              onChange={(e) => setSubscriptionStoreId(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white"
-            >
-              <option value="">নির্বাচন করা হয়নি</option>
-              {adminOwnStores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.type === 'own' ? 'নিজের' : 'কাস্টমার'})
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            type="submit"
-            disabled={cfgSaving}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:opacity-50"
-          >
-            <Save className="w-4 h-4" />
-            {cfgSaving ? 'সংরক্ষণ হচ্ছে...' : 'সংরক্ষণ করুন'}
-          </button>
+
+          <form onSubmit={handleSavePlatformPlanConfig} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  সাবস্ক্রিপশন পেমেন্ট স্টোর (সাবস্ক্রিপশন পেমেন্ট স্টোর)
+                </label>
+                <select
+                  value={subscriptionStoreId}
+                  onChange={(e) => setSubscriptionStoreId(e.target.value)}
+                  data-testid="subscription-store-select"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm bg-white font-medium text-slate-900"
+                >
+                  <option value="">— স্টোর নির্বাচন করুন —</option>
+                  {adminOwnStores.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.type === 'own' ? 'নিজের স্টোর' : 'মার্চেন্ট'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  ট্রায়াল অ্যাকাউন্টের ডিফল্ট প্ল্যান
+                </label>
+                <select
+                  value={trialPlanId}
+                  onChange={(e) => setTrialPlanId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm bg-white text-slate-900"
+                >
+                  <option value="">কোনো ফ্রি ট্রায়াল নেই (বন্ধ)</option>
+                  {nonArchivedPlans.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Selected Store Preview Box */}
+            {subscriptionStoreId && (() => {
+              const st = allStores.find((s) => s.id === subscriptionStoreId);
+              if (!st) {
+                return (
+                  <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700">
+                    নির্বাচিত স্টোরটি ডাটাবেজে পাওয়া যায়নি বা মুছে ফেলা হয়েছে। অন্য স্টোর নির্বাচন করুন।
+                  </div>
+                );
+              }
+              const acts = normalizePaymentAccounts(st.paymentAccounts, st.numbers);
+              const activeMethods = Object.entries(acts).filter(([_, entries]) => entries.some((e) => e.active));
+              return (
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
+                  <div className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                    <span>নির্বাচিত স্টোর: {st.name}</span>
+                    <span className="text-teal-700 font-mono">ID: {st.id}</span>
+                  </div>
+                  <div className="text-xs text-slate-600 flex flex-wrap gap-3">
+                    {activeMethods.length === 0 ? (
+                      <span className="text-rose-600 font-medium">⚠️ এই স্টোরে কোনো পেমেন্ট নম্বর চালু নেই!</span>
+                    ) : (
+                      activeMethods.map(([method, entries]) => {
+                        const activeEntries = entries.filter((e) => e.active);
+                        return (
+                          <div key={method} className="bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/80">
+                            <strong className="uppercase text-slate-800">{method}:</strong>{' '}
+                            {activeEntries.map((en) => {
+                              const raw = en.number;
+                              const masked = raw.length > 6 ? `${raw.slice(0, 4)}***${raw.slice(-3)}` : raw;
+                              return <span key={en.number} className="font-mono text-slate-700 ml-1">{masked}</span>;
+                            })}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="submit"
+                disabled={cfgSaving}
+                data-testid="save-subscription-store-btn"
+                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-teal-600 text-white text-xs font-bold hover:bg-teal-700 disabled:opacity-50"
+              >
+                <Save className="w-4 h-4" />
+                {cfgSaving ? 'সংরক্ষণ হচ্ছে...' : 'সেটিংস সংরক্ষণ করুন'}
+              </button>
+            </div>
+          </form>
         </div>
-      </form>
       )}
 
       {/* Plans Management Section */}
