@@ -304,7 +304,8 @@ export interface PayActivityDoc {
     | 'coupon'
     | 'changelog'
     | 'device'
-    | 'session';
+    | 'session'
+    | 'app_release';
   targetId: string;
   detail: string;
   note: string;
@@ -312,6 +313,33 @@ export interface PayActivityDoc {
   deviceInfo?: string | null;
   deviceFingerprint?: string | null;
   createdAtMs: number;
+}
+
+export interface AppReleaseDoc {
+  id: string;
+  versionName: string;
+  versionCode: number;
+  apkUrl: string;
+  storagePath: string | null;
+  fileSize: number; // bytes (0 if external link without size)
+  releaseNotes: string;
+  mandatory: boolean;
+  published: boolean;
+  publishedAtMs: number | null;
+  downloadCount: number;
+  createdAtMs: number;
+  updatedAtMs: number | null;
+}
+
+export interface AppReleaseDraftInput {
+  versionName: string;
+  versionCode: number;
+  apkUrl: string;
+  storagePath?: string | null;
+  fileSize: number;
+  releaseNotes: string;
+  mandatory: boolean;
+  publishNow: boolean;
 }
 
 export interface PaySessionDoc {

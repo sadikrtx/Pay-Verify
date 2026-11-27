@@ -377,7 +377,7 @@ service cloud.firestore {
         && (!data.keys().hasAny(['accountId']) || (data.accountId is string && data.accountId.size() <= 128))
         && (!data.keys().hasAny(['type']) || (data.type is string && data.type.size() <= 48))
         && data.action is string && data.action.size() >= 1 && data.action.size() <= 64
-        && data.targetType in ['account', 'store', 'platform', 'plan', 'addon', 'coupon', 'changelog', 'device', 'session']
+        && data.targetType in ['account', 'store', 'platform', 'plan', 'addon', 'coupon', 'changelog', 'device', 'session', 'app_release']
         && data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128
         && data.detail is string && data.detail.size() <= 400
         && data.note is string && data.note.size() >= 1 && data.note.size() <= 300
@@ -385,6 +385,31 @@ service cloud.firestore {
         && (!data.keys().hasAny(['deviceInfo']) || data.deviceInfo == null || (data.deviceInfo is string && data.deviceInfo.size() <= 200))
         && (!data.keys().hasAny(['deviceFingerprint']) || data.deviceFingerprint == null || (data.deviceFingerprint is string && data.deviceFingerprint.size() <= 64))
         && data.createdAt is timestamp;
+    }
+
+    function isValidAppRelease(data) {
+      return data.keys().hasAll([
+          'versionName', 'versionCode', 'apkUrl', 'fileSize',
+          'releaseNotes', 'mandatory', 'published', 'downloadCount',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'versionName', 'versionCode', 'apkUrl', 'storagePath', 'fileSize',
+          'releaseNotes', 'mandatory', 'published', 'publishedAt', 'downloadCount',
+          'createdAt', 'updatedAt'
+        ])
+        && data.versionName is string && data.versionName.size() >= 1 && data.versionName.size() <= 40
+        && data.versionCode is int && data.versionCode >= 1 && data.versionCode <= 100000000
+        && data.apkUrl is string && data.apkUrl.size() >= 1 && data.apkUrl.size() <= 1024
+        && (!data.keys().hasAny(['storagePath']) || data.storagePath == null || (data.storagePath is string && data.storagePath.size() <= 512))
+        && data.fileSize is int && data.fileSize >= 0 && data.fileSize <= 1000000000
+        && data.releaseNotes is string && data.releaseNotes.size() <= 2000
+        && data.mandatory is bool
+        && data.published is bool
+        && (!data.keys().hasAny(['publishedAt']) || data.publishedAt == null || data.publishedAt is timestamp || data.publishedAt is int)
+        && data.downloadCount is int && data.downloadCount >= 0 && data.downloadCount <= 1000000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
     }
 
     function isValidPaySession(data) {
@@ -920,6 +945,37 @@ service cloud.firestore {
     match /paySettings/{docId} {
       allow get: if docId == 'main' && isSuperAdmin();
       allow list, create, update, delete: if false;
+    }
+
+    // Prompt 26: Android App APK Releases (Super Admin full CRUD; public can read published == true and increment downloadCount by +1)
+    match /appReleases/{releaseId} {
+      allow get: if isValidId(releaseId) && (
+        existing().published == true ||
+        isSuperAdmin()
+      );
+      allow list: if resource.data.published == true
+        || isSuperAdmin();
+      allow create: if isValidId(releaseId)
+        && isValidAppRelease(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(releaseId)
+        && isValidAppRelease(incoming())
+        && incoming().createdAt == existing().createdAt
+        && (
+          (isSuperAdmin()
+            && incoming().updatedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'versionName', 'versionCode', 'apkUrl', 'storagePath', 'fileSize',
+              'releaseNotes', 'mandatory', 'published', 'publishedAt', 'downloadCount', 'updatedAt'
+            ])) ||
+          (existing().published == true
+            && incoming().published == true
+            && incoming().downloadCount == existing().downloadCount + 1
+            && incoming().diff(existing()).affectedKeys().hasOnly(['downloadCount']))
+        );
+      allow delete: if isValidId(releaseId) && isSuperAdmin();
     }
   }
 }

@@ -23,10 +23,13 @@
    - `usedTrxIds` remains strictly `allow read, write: if false;` (Worker-only).
    - Super Admin cannot edit another account's `paySessions` or `paySms`.
    - Zero `get()`/`exists()` inside any `allow list` rule (Pillar 8).
+9. **Android App Releases Authority (`appReleases`)**:
+   - Only Super Admin may `create`, full-`update`, or `delete` `appReleases` documents, and only Super Admin may `get` or `list` unpublished (`published == false`) drafts.
+   - Public (including unauthenticated) visitors may `get` or `list` ONLY documents where `resource.data.published == true`, and may perform a strictly scoped `update` that ONLY increments `downloadCount` by `+1` on a published release (`affectedKeys().hasOnly(['downloadCount'])`).
 
 ## The "Dirty Dozen" Payloads (Must All Be Denied)
-1. **Unauthenticated read of `payAccounts`, `payStores`, `paySessions`, `paySms`, `payDevices`, `pairingTokens`, `payChangelog`**.
-2. **Non-super-admin creates or updates a `payPlans` document** (or tries to delete any `payPlans` doc).
+1. **Unauthenticated read of `payAccounts`, `payStores`, `paySessions`, `paySms`, `payDevices`, `pairingTokens`, `payChangelog`, or unpublished `appReleases`**.
+2. **Non-super-admin creates or updates a `payPlans` or `appReleases` document** (or tries to delete any `payPlans` or `appReleases` doc).
 3. **Non-super-admin lists `payCoupons`** to scrape secret discount codes, or modifies `usedCount`/`percentOff`.
 4. **Account owner self-upgrades `planId`, `planStatus`, `paidUntil`, `storeLimitOverride`, or `ownedAddons`** on `payAccounts/{uid}`.
 5. **Account owner attempts to reset `usedAt: null` or extend `expiresAt`** on an existing `pairingTokens/{tokenId}` document.
@@ -34,6 +37,6 @@
 7. **Non-super-admin writes a `payChangelog` entry**.
 8. **Non-super-admin forges a `payActivity` doc with `type: 'device_rejected'` or `targetType: 'plan'`** (only `type == 'login'` self-logging allowed).
 9. **Account A reads `payActivity` belonging to Account B**.
-10. **Super Admin with `email_verified == false`** attempts to write `payPlans`, `payCoupons`, or `payPlatform/config`.
-11. **Shadow/ghost field injection** on `payPlans`, `payAddons`, `payCoupons`, `pairingTokens`, or `payChangelog`.
+10. **Super Admin with `email_verified == false`** attempts to write `payPlans`, `payCoupons`, `appReleases`, or `payPlatform/config`.
+11. **Shadow/ghost field injection** on `payPlans`, `payAddons`, `payCoupons`, `pairingTokens`, `payChangelog`, or `appReleases`.
 12. **Client read or write of `usedTrxIds/{trxId}`**, or Super Admin updating another merchant's `paySessions`/`paySms`.

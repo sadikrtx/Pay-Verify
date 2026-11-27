@@ -1,0 +1,32 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn()
+        && request.auth.token.email in ['ayshamukta00@gmail.com', 'sadikrtx3060@gmail.com']
+        && request.auth.token.email_verified == true;
+    }
+
+    match /app-releases/{fileName} {
+      allow read: if true;
+      allow write: if isSuperAdmin()
+        && (
+          request.resource == null ||
+          (
+            fileName.matches('^.*\\.apk$')
+            && request.resource.size > 0
+            && request.resource.size <= 200 * 1024 * 1024
+          )
+        );
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

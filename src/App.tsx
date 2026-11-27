@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   BookOpen,
   CreditCard,
+  Download,
   Inbox,
   LayoutDashboard,
   Menu,
@@ -37,6 +38,8 @@ import { ApiDocsView } from './components/ApiDocsView';
 import { AccountView } from './components/AccountView';
 import { ChangelogView } from './components/ChangelogView';
 import { SuperAdminView } from './components/SuperAdminView';
+import { SuperAdminAppUpdatesTab } from './components/SuperAdminAppUpdatesTab';
+import { AppDownloadPage } from './components/AppDownloadPage';
 import { PayVerifyProvider, usePayVerify } from './lib/store';
 import { isSmsUnmatchedForInbox } from './lib/platformLogic';
 import type { PayPlanDoc } from './types/payment';
@@ -53,9 +56,17 @@ type DashboardTab =
   | 'api_docs'
   | 'changelog'
   | 'account'
-  | 'super_admin';
+  | 'super_admin'
+  | 'admin_app_updates';
 
-type PublicRoute = 'landing' | 'pricing' | 'checkout' | 'setup_account' | 'login' | 'admin';
+type PublicRoute =
+  | 'landing'
+  | 'pricing'
+  | 'checkout'
+  | 'setup_account'
+  | 'login'
+  | 'admin'
+  | 'app_download';
 
 function extractPublicSessionId(): string | null {
   if (typeof window === 'undefined') return null;
@@ -76,6 +87,7 @@ function resolveRouteFromPath(pathname: string): PublicRoute {
   if (clean === '/login') return 'login';
   if (clean === '/setup-account') return 'setup_account';
   if (clean === '/pricing' || clean === '/plans') return 'pricing';
+  if (clean === '/app' || clean === '/download') return 'app_download';
   return 'landing';
 }
 
@@ -97,6 +109,7 @@ const DashboardShell: React.FC = () => {
     deviceRejectedAlerts,
     newDeviceLoginAlert,
     dismissNewDeviceLoginAlert,
+    publishedAppRelease,
     signInWithGoogle,
     signInWithEmail,
     signUpFunnelAccount,
@@ -133,6 +146,14 @@ const DashboardShell: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showInAppPlans, setShowInAppPlans] = useState(false);
   const [autoOpenTestModal, setAutoOpenTestModal] = useState(false);
+  const [dismissedAppReleaseCode, setDismissedAppReleaseCode] = useState<number | null>(() => {
+    try {
+      const raw = window.localStorage.getItem('payverify_dismissed_app_release_code');
+      return raw ? Number(raw) : null;
+    } catch {
+      return null;
+    }
+  });
 
   const navigatePublic = useCallback((path: string, nextRoute: PublicRoute) => {
     if (typeof window !== 'undefined') {
@@ -182,6 +203,21 @@ const DashboardShell: React.FC = () => {
       <div className="min-h-screen bg-[#FFF9EC] flex items-center justify-center p-6">
         <div className="w-9 h-9 rounded-full border-3 border-[#0F766E] border-t-transparent animate-spin" />
       </div>
+    );
+  }
+
+  // Public Android App Download Page (/app or /download) — accessible to everyone without login
+  if (publicRoute === 'app_download') {
+    return (
+      <AppDownloadPage
+        onBackToDashboard={
+          user
+            ? () => {
+                navigatePublic('/', 'landing');
+              }
+            : undefined
+        }
+      />
     );
   }
 
@@ -350,6 +386,7 @@ const DashboardShell: React.FC = () => {
 
   if (account?.isSuperAdmin) {
     navItems.push({ id: 'super_admin', label: 'সুপার অ্যাডমিন', icon: Shield });
+    navItems.push({ id: 'admin_app_updates', label: 'Android App আপডেট', icon: Smartphone });
   }
 
   const selectTab = (tab: DashboardTab) => {
@@ -409,7 +446,7 @@ const DashboardShell: React.FC = () => {
                 onClick={() => selectTab(item.id)}
                 className={`w-full flex items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
                   active
-                    ? item.id === 'super_admin'
+                    ? item.id === 'super_admin' || item.id === 'admin_app_updates'
                       ? 'bg-indigo-50 text-indigo-800 border border-indigo-200/70'
                       : 'bg-teal-50 text-teal-800 border border-teal-200/70'
                     : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 border border-transparent'
@@ -419,7 +456,7 @@ const DashboardShell: React.FC = () => {
                   <Icon
                     className={`w-4 h-4 shrink-0 ${
                       active
-                        ? item.id === 'super_admin'
+                        ? item.id === 'super_admin' || item.id === 'admin_app_updates'
                           ? 'text-indigo-700'
                           : 'text-teal-700'
                         : 'text-slate-400'
@@ -545,6 +582,84 @@ const DashboardShell: React.FC = () => {
       {/* Main Content */}
       <main className="flex-1 lg:pl-64 min-w-0">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-5">
+          {/* PART C — মার্চেন্ট ড্যাশবোর্ডে Android App আপডেট নোটিশ */}
+          {publishedAppRelease &&
+            dismissedAppReleaseCode !== publishedAppRelease.versionCode &&
+            activeTab !== 'admin_app_updates' && (
+              <div
+                data-testid="merchant-app-update-notice"
+                className={`flex flex-wrap items-center justify-between gap-3 p-3.5 sm:p-4 rounded-2xl border shadow-2xs ${
+                  publishedAppRelease.mandatory
+                    ? 'bg-rose-50 border-rose-300 text-rose-950'
+                    : 'bg-white border-teal-200/90 text-slate-900'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                      publishedAppRelease.mandatory
+                        ? 'bg-rose-600 text-white'
+                        : 'bg-teal-50 border border-teal-200 text-teal-700'
+                    }`}
+                  >
+                    <Smartphone className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-bold">
+                        PayVerify Android App — সর্বশেষ ভার্সন {publishedAppRelease.versionName}
+                      </span>
+                      {publishedAppRelease.mandatory && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-600 text-white text-[11px] font-bold">
+                          <AlertTriangle className="w-3 h-3" />
+                          জরুরি আপডেট
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    data-testid="merchant-app-update-download-btn"
+                    onClick={() => navigatePublic('/download', 'app_download')}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-white transition-colors ${
+                      publishedAppRelease.mandatory
+                        ? 'bg-rose-600 hover:bg-rose-700'
+                        : 'bg-teal-700 hover:bg-teal-800'
+                    }`}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    ডাউনলোড
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="merchant-app-update-dismiss-btn"
+                    onClick={() => {
+                      setDismissedAppReleaseCode(publishedAppRelease.versionCode);
+                      try {
+                        window.localStorage.setItem(
+                          'payverify_dismissed_app_release_code',
+                          String(publishedAppRelease.versionCode)
+                        );
+                      } catch {
+                        // Ignore
+                      }
+                    }}
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      publishedAppRelease.mandatory
+                        ? 'text-rose-700 hover:bg-rose-100'
+                        : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
+                    }`}
+                    aria-label="বন্ধ করুন"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
           {/* 3-Day Grace Period Warning Banner (everything still works) */}
           {inGrace && planEvaluation && (
             <div
@@ -685,6 +800,9 @@ const DashboardShell: React.FC = () => {
             <AccountView onOpenPlanComparison={() => setShowInAppPlans(true)} />
           )}
           {activeTab === 'super_admin' && account?.isSuperAdmin && <SuperAdminView />}
+          {activeTab === 'admin_app_updates' && account?.isSuperAdmin && (
+            <SuperAdminAppUpdatesTab />
+          )}
         </div>
       </main>
     </div>

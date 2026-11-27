@@ -134,4 +134,15 @@ test('firestore.rules restricts simulated SMS and simulated verification strictl
   assert.match(smsBlock, /incoming\(\)\.simulated == true/);
 });
 
+test('firestore.rules secures appReleases: Super Admin CRUD only, public read only for published == true, and atomic +1 downloadCount increment', () => {
+  const releasesBlock = rules.slice(rules.indexOf('match /appReleases/{releaseId}'));
+  assert.match(releasesBlock, /existing\(\)\.published == true \|\|\s*isSuperAdmin\(\)/);
+  assert.match(releasesBlock, /allow list: if resource\.data\.published == true\s*\|\| isSuperAdmin\(\);/);
+  assert.match(releasesBlock, /allow create:[\s\S]*isValidAppRelease\(incoming\(\)\)[\s\S]*isSuperAdmin\(\)/);
+  assert.match(releasesBlock, /incoming\(\)\.downloadCount == existing\(\)\.downloadCount \+ 1/);
+  assert.match(releasesBlock, /affectedKeys\(\)\.hasOnly\(\['downloadCount'\]\)/);
+  assert.match(releasesBlock, /allow delete: if isValidId\(releaseId\) && isSuperAdmin\(\);/);
+});
+
+
 

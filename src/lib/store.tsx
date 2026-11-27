@@ -26,7 +26,8 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
+import { deleteObject, ref as storageRef } from 'firebase/storage';
+import { auth, db, googleProvider, handleFirestoreError, OperationType, storage } from './firebase';
 import {
   generateDocId,
   generatePairingTokenCode,
@@ -82,6 +83,7 @@ import {
   mapAccount,
   mapActivity,
   mapAddon,
+  mapAppRelease,
   mapChangelog,
   mapCoupon,
   mapDevice,
@@ -94,6 +96,7 @@ import {
   mapStore,
   mapSubscriptionPurchase,
 } from './storeMappers';
+import { pickLatestPublishedRelease, validateVersionCode } from './appReleases';
 import { normalizeLandingConfig } from './landingConfig';
 import {
   DEFAULT_STORE_ACCENT,
@@ -103,6 +106,8 @@ import {
   SUPER_ADMIN_EMAIL,
   TRIAL_DURATION_MS,
   type AddonKind,
+  type AppReleaseDoc,
+  type AppReleaseDraftInput,
   type LandingPageConfig,
   type PairingTokenDoc,
   type PayAccountDoc,
@@ -232,6 +237,10 @@ interface PayVerifyContextValue {
   allDevices: PayDeviceDoc[];
   activityLog: PayActivityDoc[];
   subscriptionPurchases: PaySubscriptionPurchaseDoc[];
+  // Android App Releases (publishedAppRelease available to everyone; appReleases list for Super Admin)
+  appReleases: AppReleaseDoc[];
+  publishedAppRelease: AppReleaseDoc | null;
+  appReleasesLoaded: boolean;
   // Auth & Security
   signInWithGoogle: (portal?: 'buyer' | 'admin') => Promise<void>;
   signInWithEmail: (
@@ -387,6 +396,13 @@ interface PayVerifyContextValue {
     existingEntryId?: string
   ) => Promise<PayChangelogDoc>;
   adminDeleteChangelog: (entryId: string) => Promise<void>;
+  adminSaveAppRelease: (
+    draft: AppReleaseDraftInput,
+    existingReleaseId?: string
+  ) => Promise<AppReleaseDoc>;
+  adminTogglePublishAppRelease: (releaseId: string, publish: boolean) => Promise<void>;
+  adminDeleteAppRelease: (releaseId: string) => Promise<void>;
+  recordAppReleaseDownload: (releaseId: string) => Promise<void>;
 }
 
 const PayVerifyContext = createContext<PayVerifyContextValue | null>(null);
@@ -539,6 +555,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [allDevices, setAllDevices] = useState<PayDeviceDoc[]>([]);
   const [activityLog, setActivityLog] = useState<PayActivityDoc[]>([]);
   const [subscriptionPurchases, setSubscriptionPurchases] = useState<PaySubscriptionPurchaseDoc[]>([]);
+  const [appReleases, setAppReleases] = useState<AppReleaseDoc[]>([]);
+  const [publishedReleasesSnapshot, setPublishedReleasesSnapshot] = useState<AppReleaseDoc[]>([]);
+  const [appReleasesLoaded, setAppReleasesLoaded] = useState(isAutoTest);
 
   const funnelSignupInProgressRef = useRef(false);
   const adminPortalCheckingRef = useRef(false);
@@ -595,6 +614,27 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return unsub;
   }, [isAutoTest, fbUser]);
 
+  // Public published Android App release listener (works for logged-out visitors on /app & /download and logged-in merchants)
+  useEffect(() => {
+    if (isAutoTest) return;
+    const qPublished = query(collection(db, 'appReleases'), where('published', '==', true));
+    const unsub = onSnapshot(
+      qPublished,
+      (snap) => {
+        setPublishedReleasesSnapshot(
+          snap.docs
+            .map((d) => mapAppRelease(d.id, d.data()))
+            .sort((a, b) => b.versionCode - a.versionCode || b.createdAtMs - a.createdAtMs)
+        );
+        setAppReleasesLoaded(true);
+      },
+      () => {
+        setAppReleasesLoaded(true);
+      }
+    );
+    return unsub;
+  }, [isAutoTest]);
+
   useEffect(() => {
     if (isAutoTest) return;
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -625,6 +665,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setAllDevices([]);
         setActivityLog([]);
         setSubscriptionPurchases([]);
+        setAppReleases([]);
         setAddons([]);
         setCoupons([]);
         setChangelog([]);
@@ -1190,6 +1231,19 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           () => {}
         );
 
+        const uAppReleases = onSnapshot(
+          collection(db, 'appReleases'),
+          (snap) => {
+            setAppReleases(
+              snap.docs
+                .map((d) => mapAppRelease(d.id, d.data()))
+                .sort((a, b) => b.versionCode - a.versionCode || b.createdAtMs - a.createdAtMs)
+            );
+            setAppReleasesLoaded(true);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'appReleases(admin)')
+        );
+
         unsubs.push(
           uAllAccounts,
           uAllStores,
@@ -1197,7 +1251,8 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           uAllDevices,
           uActivity,
           uCoupons,
-          uPurchases
+          uPurchases,
+          uAppReleases
         );
       }
     };
@@ -1228,6 +1283,16 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [isAutoTest, fbUser, account, plans]);
 
   // Derived data
+  const publishedAppRelease = useMemo(() => {
+    if (account?.isSuperAdmin || isAutoTest) {
+      return (
+        pickLatestPublishedRelease(appReleases) ??
+        pickLatestPublishedRelease(publishedReleasesSnapshot)
+      );
+    }
+    return pickLatestPublishedRelease(publishedReleasesSnapshot);
+  }, [account?.isSuperAdmin, isAutoTest, appReleases, publishedReleasesSnapshot]);
+
   const visibleMarketingPlans = useMemo(
     () =>
       plans
@@ -3744,6 +3809,287 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [account, isAutoTest]
   );
 
+  const adminSaveAppRelease = useCallback(
+    async (draft: AppReleaseDraftInput, existingReleaseId?: string): Promise<AppReleaseDoc> => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      }
+      const versionName = draft.versionName.trim().slice(0, 40);
+      if (!versionName) {
+        throw new Error('ভার্সন নাম লিখুন (যেমন: 1.2.0)।');
+      }
+      const versionCode = Math.trunc(Number(draft.versionCode));
+      const codeCheck = validateVersionCode(versionCode, appReleases, existingReleaseId);
+      if (!codeCheck.valid) {
+        throw new Error(codeCheck.errorBn || 'সঠিক ভার্সন কোড দিন।');
+      }
+      const apkUrl = draft.apkUrl.trim().slice(0, 2000);
+      if (!apkUrl) {
+        throw new Error('APK ফাইল আপলোড করুন অথবা ডাউনলোড লিংক দিন।');
+      }
+      const storagePath =
+        typeof draft.storagePath === 'string' && draft.storagePath.trim()
+          ? draft.storagePath.trim().slice(0, 400)
+          : null;
+      const fileSize = Math.max(0, Math.trunc(Number(draft.fileSize || 0)));
+      const releaseNotes = (draft.releaseNotes || '').trim().slice(0, 4000);
+      const mandatory = Boolean(draft.mandatory);
+      const published = Boolean(draft.publishNow);
+
+      const id = existingReleaseId || generateDocId('apk');
+      const isEdit = Boolean(existingReleaseId);
+      const existing = existingReleaseId
+        ? appReleases.find((r) => r.id === existingReleaseId)
+        : undefined;
+      const nowMs = Date.now();
+      const publishedAtMs = published ? existing?.publishedAtMs ?? nowMs : null;
+
+      const savedRelease: AppReleaseDoc = {
+        id,
+        versionName,
+        versionCode,
+        apkUrl,
+        storagePath,
+        fileSize,
+        releaseNotes,
+        mandatory,
+        published,
+        publishedAtMs,
+        downloadCount: existing?.downloadCount ?? 0,
+        createdAtMs: existing?.createdAtMs ?? nowMs,
+        updatedAtMs: nowMs,
+      };
+
+      const actId = generateDocId('act');
+      const actAction = published
+        ? 'publish_app_release'
+        : isEdit
+          ? 'update_app_release'
+          : 'create_app_release';
+      const detail = `Android App v${versionName} (কোড ${versionCode}) — ${
+        published ? 'পাবলিশড' : 'খসড়া'
+      }`;
+
+      if (isAutoTest) {
+        setAppReleases((prev) => {
+          const withoutCurrent = prev.filter((r) => r.id !== id);
+          const demoted = published
+            ? withoutCurrent.map((r) =>
+                r.published ? { ...r, published: false, updatedAtMs: nowMs } : r
+              )
+            : withoutCurrent;
+          return [savedRelease, ...demoted].sort(
+            (a, b) => b.versionCode - a.versionCode || b.createdAtMs - a.createdAtMs
+          );
+        });
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            actorAccountId: account.id,
+            actorEmail: account.email,
+            type: 'admin_action',
+            action: actAction,
+            targetType: 'app_release',
+            targetId: id,
+            detail,
+            note: detail,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return savedRelease;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        // Enforce single published rule: unpublish any other currently published versions
+        if (published) {
+          for (const other of appReleases) {
+            if (other.id !== id && other.published) {
+              batch.update(doc(db, 'appReleases', other.id), {
+                published: false,
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+        }
+
+        const payload = {
+          versionName: savedRelease.versionName,
+          versionCode: savedRelease.versionCode,
+          apkUrl: savedRelease.apkUrl,
+          storagePath: savedRelease.storagePath,
+          fileSize: savedRelease.fileSize,
+          releaseNotes: savedRelease.releaseNotes,
+          mandatory: savedRelease.mandatory,
+          published: savedRelease.published,
+          publishedAt: savedRelease.published
+            ? existing?.publishedAtMs
+              ? Timestamp.fromMillis(existing.publishedAtMs)
+              : serverTimestamp()
+            : null,
+          downloadCount: savedRelease.downloadCount,
+          updatedAt: serverTimestamp(),
+        };
+
+        if (isEdit) {
+          batch.update(doc(db, 'appReleases', id), payload);
+        } else {
+          batch.set(doc(db, 'appReleases', id), {
+            ...payload,
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        batch.set(doc(db, 'payActivity', actId), {
+          actorAccountId: account.id,
+          actorEmail: account.email,
+          type: 'admin_action',
+          action: actAction,
+          targetType: 'app_release',
+          targetId: id,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `appReleases/${id}`);
+      }
+
+      return savedRelease;
+    },
+    [account, appReleases, isAutoTest]
+  );
+
+  const adminTogglePublishAppRelease = useCallback(
+    async (releaseId: string, publish: boolean) => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      }
+      const target = appReleases.find((r) => r.id === releaseId);
+      if (!target) {
+        throw new Error('ভার্সন খুঁজে পাওয়া যায়নি।');
+      }
+      const nowMs = Date.now();
+      const actId = generateDocId('act');
+      const detail = `Android App v${target.versionName} (কোড ${target.versionCode}) — ${
+        publish ? 'পাবলিশ করা হয়েছে' : 'আনপাবলিশ করা হয়েছে'
+      }`;
+
+      if (isAutoTest) {
+        setAppReleases((prev) =>
+          prev.map((r) => {
+            if (r.id === releaseId) {
+              return {
+                ...r,
+                published: publish,
+                publishedAtMs: publish ? nowMs : null,
+                updatedAtMs: nowMs,
+              };
+            }
+            if (publish && r.published) {
+              return { ...r, published: false, updatedAtMs: nowMs };
+            }
+            return r;
+          })
+        );
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        if (publish) {
+          for (const other of appReleases) {
+            if (other.id !== releaseId && other.published) {
+              batch.update(doc(db, 'appReleases', other.id), {
+                published: false,
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+        }
+        batch.update(doc(db, 'appReleases', releaseId), {
+          published: publish,
+          publishedAt: publish ? serverTimestamp() : null,
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db, 'payActivity', actId), {
+          actorAccountId: account.id,
+          actorEmail: account.email,
+          type: 'admin_action',
+          action: publish ? 'publish_app_release' : 'unpublish_app_release',
+          targetType: 'app_release',
+          targetId: releaseId,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `appReleases/${releaseId}`);
+      }
+    },
+    [account, appReleases, isAutoTest]
+  );
+
+  const adminDeleteAppRelease = useCallback(
+    async (releaseId: string) => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      }
+      const target = appReleases.find((r) => r.id === releaseId);
+      if (isAutoTest) {
+        setAppReleases((prev) => prev.filter((r) => r.id !== releaseId));
+        return;
+      }
+      if (target?.storagePath) {
+        try {
+          await deleteObject(storageRef(storage, target.storagePath));
+        } catch {
+          // Ignore if Storage object was already deleted or stored via local fallback
+        }
+      }
+      try {
+        await deleteDoc(doc(db, 'appReleases', releaseId));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `appReleases/${releaseId}`);
+      }
+    },
+    [account, appReleases, isAutoTest]
+  );
+
+  const recordAppReleaseDownload = useCallback(
+    async (releaseId: string) => {
+      const target =
+        appReleases.find((r) => r.id === releaseId) ||
+        publishedReleasesSnapshot.find((r) => r.id === releaseId) ||
+        (publishedAppRelease?.id === releaseId ? publishedAppRelease : null);
+
+      const nextCount = (target?.downloadCount ?? 0) + 1;
+
+      if (isAutoTest) {
+        setAppReleases((prev) =>
+          prev.map((r) => (r.id === releaseId ? { ...r, downloadCount: r.downloadCount + 1 } : r))
+        );
+        setPublishedReleasesSnapshot((prev) =>
+          prev.map((r) => (r.id === releaseId ? { ...r, downloadCount: r.downloadCount + 1 } : r))
+        );
+        return;
+      }
+
+      try {
+        await updateDoc(doc(db, 'appReleases', releaseId), {
+          downloadCount: nextCount,
+        });
+      } catch {
+        // Non-fatal counter increment on public download
+      }
+    },
+    [appReleases, publishedReleasesSnapshot, publishedAppRelease, isAutoTest]
+  );
+
   const dismissNewDeviceLoginAlert = useCallback(() => setNewDeviceLoginAlert(false), []);
 
   const value = useMemo<PayVerifyContextValue>(
@@ -3786,6 +4132,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       allDevices,
       activityLog,
       subscriptionPurchases,
+      appReleases,
+      publishedAppRelease,
+      appReleasesLoaded,
       signInWithGoogle,
       signInWithEmail,
       signUpWithEmail,
@@ -3827,6 +4176,10 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       adminSaveCoupon,
       adminSaveChangelog,
       adminDeleteChangelog,
+      adminSaveAppRelease,
+      adminTogglePublishAppRelease,
+      adminDeleteAppRelease,
+      recordAppReleaseDownload,
     }),
     [
       activeUser,
@@ -3866,6 +4219,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       allDevices,
       activityLog,
       subscriptionPurchases,
+      appReleases,
+      publishedAppRelease,
+      appReleasesLoaded,
       signInWithGoogle,
       signInWithEmail,
       signUpWithEmail,
@@ -3907,6 +4263,10 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       adminSaveCoupon,
       adminSaveChangelog,
       adminDeleteChangelog,
+      adminSaveAppRelease,
+      adminTogglePublishAppRelease,
+      adminDeleteAppRelease,
+      recordAppReleaseDownload,
     ]
   );
 

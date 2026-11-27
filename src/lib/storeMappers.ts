@@ -451,6 +451,7 @@ const VALID_ACTIVITY_TARGETS = [
   'changelog',
   'device',
   'session',
+  'app_release',
 ] as const;
 
 export function mapActivity(id: string, d: DocumentData): PayActivityDoc {
@@ -476,3 +477,22 @@ export function mapActivity(id: string, d: DocumentData): PayActivityDoc {
     createdAtMs: parseTimestampMs(d.createdAt) ?? Date.now(),
   };
 }
+
+export function mapAppRelease(id: string, d: DocumentData) {
+  return {
+    id,
+    versionName: String(d.versionName || '').trim(),
+    versionCode: Math.max(1, Math.trunc(Number(d.versionCode ?? 1))),
+    apkUrl: String(d.apkUrl || '').trim(),
+    storagePath: typeof d.storagePath === 'string' && d.storagePath.trim() ? d.storagePath.trim() : null,
+    fileSize: Math.max(0, Math.trunc(Number(d.fileSize ?? 0))),
+    releaseNotes: typeof d.releaseNotes === 'string' ? d.releaseNotes : '',
+    mandatory: Boolean(d.mandatory),
+    published: Boolean(d.published),
+    publishedAtMs: parseTimestampMs(d.publishedAt),
+    downloadCount: Math.max(0, Math.trunc(Number(d.downloadCount ?? 0))),
+    createdAtMs: parseTimestampMs(d.createdAt) ?? Date.now(),
+    updatedAtMs: parseTimestampMs(d.updatedAt),
+  };
+}
+

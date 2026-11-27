@@ -12,6 +12,7 @@ import {
   Receipt,
   Save,
   Shield,
+  Smartphone,
   Sparkles,
   Store,
   UserCheck,
@@ -40,6 +41,7 @@ import type {
 import { SuperAdminPlansTab } from './SuperAdminPlansTab';
 import { SuperAdminChangelogTab } from './SuperAdminChangelogTab';
 import { SuperAdminLandingTab } from './SuperAdminLandingTab';
+import { SuperAdminAppUpdatesTab } from './SuperAdminAppUpdatesTab';
 import {
   CHECKOUT_METHOD_BRANDS,
   CHECKOUT_METHODS,
@@ -55,6 +57,7 @@ import { PaymentLogo } from './PaymentLogo';
 
 type AdminTab =
   | 'summary'
+  | 'app_updates'
   | 'landing'
   | 'purchases'
   | 'notifications'
@@ -69,6 +72,7 @@ export const SuperAdminView: React.FC = () => {
     platformConfig,
     plans,
     changelog,
+    appReleases,
     allAccounts,
     allStores,
     allSessions,
@@ -287,6 +291,7 @@ export const SuperAdminView: React.FC = () => {
     badge?: number;
   }> = [
     { id: 'summary', label: 'প্ল্যাটফর্ম সারাংশ', icon: Activity },
+    { id: 'app_updates', label: 'Android App আপডেট', icon: Smartphone, badge: appReleases.length },
     { id: 'landing', label: 'ল্যান্ডিং পেজ / বিজ্ঞাপন', icon: Megaphone },
     {
       id: 'purchases',
@@ -614,6 +619,9 @@ export const SuperAdminView: React.FC = () => {
 
       {/* TAB: প্ল্যানসমূহ (Plans + Add-ons + Coupons) */}
       {tab === 'plans' && <SuperAdminPlansTab />}
+
+      {/* TAB: Android App আপডেট (APK Upload & Version Manager) */}
+      {tab === 'app_updates' && <SuperAdminAppUpdatesTab />}
 
       {/* TAB: নতুন কি এসেছে (Changelog Manager) */}
       {tab === 'changelog' && <SuperAdminChangelogTab />}

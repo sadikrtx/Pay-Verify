@@ -217,7 +217,7 @@
         "accountId": { "type": "string", "maxLength": 128 },
         "type": { "type": "string", "maxLength": 48 },
         "action": { "type": "string", "maxLength": 64 },
-        "targetType": { "type": "string", "enum": ["account", "store", "platform", "plan", "addon", "coupon", "changelog", "device", "session"] },
+        "targetType": { "type": "string", "enum": ["account", "store", "platform", "plan", "addon", "coupon", "changelog", "device", "session", "app_release"] },
         "targetId": { "type": "string", "maxLength": 128 },
         "detail": { "type": "string", "maxLength": 400 },
         "note": { "type": "string", "maxLength": 300 },
@@ -332,6 +332,37 @@
         "workerBaseUrl": { "type": "string", "maxLength": 256 }
       },
       "required": ["ownerUid"]
+    },
+    "AppRelease": {
+      "title": "AppRelease",
+      "description": "Android APK release metadata managed exclusively by Super Admin. Public readers can view only the published release and increment downloadCount by 1.",
+      "type": "object",
+      "properties": {
+        "versionName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "versionCode": { "type": "integer" },
+        "apkUrl": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "storagePath": { "type": "string", "maxLength": 512 },
+        "fileSize": { "type": "integer" },
+        "releaseNotes": { "type": "string", "maxLength": 2000 },
+        "mandatory": { "type": "boolean" },
+        "published": { "type": "boolean" },
+        "publishedAt": { "type": "string", "format": "date-time" },
+        "downloadCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "versionName",
+        "versionCode",
+        "apkUrl",
+        "fileSize",
+        "releaseNotes",
+        "mandatory",
+        "published",
+        "downloadCount",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -398,6 +429,10 @@
     "/paySettings/{docId}": {
       "schema": { "$ref": "#/entities/PaySettingsLegacy" },
       "description": "Legacy Prompt A0 settings singleton (Super Admin read-only for migration)."
+    },
+    "/appReleases/{releaseId}": {
+      "schema": { "$ref": "#/entities/AppRelease" },
+      "description": "Android App APK releases; Super Admin full CRUD; public can read only published == true releases and atomically increment downloadCount by +1."
     }
   }
 }
