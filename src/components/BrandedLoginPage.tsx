@@ -43,8 +43,8 @@ function mapLoginErrorBn(err: unknown): string {
   if (code === 'auth/too-many-requests') {
     return 'অতিরিক্ত চেষ্টার কারণে সাময়িকভাবে বন্ধ আছে। কিছুক্ষণ পর আবার চেষ্টা করুন।';
   }
-  if (code === 'auth/popup-closed-by-user') {
-    return 'সাইন-ইন পপআপ বন্ধ করা হয়েছে।';
+  if (err instanceof Error && (err.message.includes('INTERNAL ASSERTION FAILED') || err.message.includes('popup') || err.message.includes('cancelled'))) {
+    return 'ব্রাউজার পপআপ ব্লক করা হয়েছে বা আইফ্রেম পরিবেশে পপআপ সম্ভব নয়। অনুগ্রহ করে ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন।';
   }
   if (err instanceof Error && err.message.trim()) {
     return err.message;

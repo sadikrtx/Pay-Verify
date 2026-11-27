@@ -13,6 +13,7 @@ import {
   DEFAULT_STORE_ACCENT,
   SEEDED_PLAN_IDS,
   TRIAL_DURATION_MS,
+  type AccountActivationSource,
   type AddonKind,
   type LastWebhookInfo,
   type MerchantSupportNoteDoc,
@@ -277,6 +278,15 @@ export function mapAccount(id: string, d: DocumentData): PayAccountDoc {
         ? null
         : Math.max(0, Math.trunc(Number(d.storeLimitOverride))),
     ownedAddons,
+    activationSource:
+      d.activationSource === 'purchase_claim' ||
+      d.activationSource === 'admin_created' ||
+      d.activationSource === 'self_registered'
+        ? (d.activationSource as AccountActivationSource)
+        : null,
+    purchaseId: d.purchaseId ? String(d.purchaseId) : null,
+    createdByAdminUid: d.createdByAdminUid ? String(d.createdByAdminUid) : null,
+    appDownloadedAtMs: parseTimestampMs(d.appDownloadedAt),
     lastChangelogReadAtMs: parseTimestampMs(d.lastChangelogReadAt),
     tokensRevokedAtMs: parseTimestampMs(d.tokensRevokedAt),
     createdAtMs: createdMs,

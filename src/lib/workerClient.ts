@@ -106,6 +106,43 @@ export function buildDeviceQrPayload(workerBaseUrl: string, deviceKey: string): 
   });
 }
 
+export type AuthTokenProvider = string | ((forceRefresh?: boolean) => Promise<string>);
+
+/**
+ * Part C.3 — Authenticated fetch with single 401 token refresh + retry.
+ * One expired Firebase ID token refreshes ONCE and retries seamlessly without
+ * ever bouncing the logged-in user back to /login.
+ */
+export async function fetchWithAuthRetry(
+  url: string,
+  buildInit: (token: string) => RequestInit,
+  tokenOrProvider: AuthTokenProvider,
+  fetchImpl: typeof fetch = fetch
+): Promise<Response> {
+  const resolveToken =
+    typeof tokenOrProvider === 'function'
+      ? tokenOrProvider
+      : async () => tokenOrProvider;
+
+  const initialToken = await resolveToken(false);
+  const firstRes = await fetchImpl(url, buildInit(initialToken));
+  if (firstRes.status !== 401 || typeof tokenOrProvider !== 'function') {
+    return firstRes;
+  }
+
+  let refreshedToken: string;
+  try {
+    refreshedToken = await resolveToken(true);
+  } catch {
+    return firstRes;
+  }
+  if (!refreshedToken) {
+    return firstRes;
+  }
+
+  return fetchImpl(url, buildInit(refreshedToken));
+}
+
 /**
  * Public Worker Contract: GET {workerBaseUrl}/session/{sessionId}/status
  * Used ONLY by the customer payment page (never calls Firestore).
@@ -248,6 +285,7 @@ export async function fetchSessionStatus(
     receivedAmountPaisa:
       typeof data.receivedAmountPaisa === 'number' ? Math.trunc(data.receivedAmountPaisa) : null,
     webhookFired: typeof data.webhookFired === 'boolean' ? data.webhookFired : undefined,
+    devicePaired: typeof data.devicePaired === 'boolean' ? data.devicePaired : undefined,
   };
 }
 
@@ -428,7 +466,7 @@ export interface WorkerTestSessionCreateResult {
  */
 export async function createTestWorkerSession(
   workerBaseUrl: string,
-  firebaseIdToken: string,
+  firebaseIdTokenOrProvider: AuthTokenProvider,
   payload: {
     storeId: string;
     method: WalletMethod;
@@ -438,26 +476,31 @@ export async function createTestWorkerSession(
   fetchImpl: typeof fetch = fetch
 ): Promise<WorkerTestSessionCreateResult> {
   const base = normalizeWorkerBaseUrl(workerBaseUrl);
-  if (!base || !firebaseIdToken) {
+  if (!base || !firebaseIdTokenOrProvider) {
     return { supported: false };
   }
 
   try {
-    const res = await fetchImpl(`${base}/session/create`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${firebaseIdToken}`,
-      },
-      body: JSON.stringify({
-        storeId: payload.storeId,
-        method: payload.method,
-        amountPaisa: Math.trunc(payload.amountPaisa),
-        isTest: true,
-        testType: payload.testType,
+    const res = await fetchWithAuthRetry(
+      `${base}/session/create`,
+      (token) => ({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          storeId: payload.storeId,
+          method: payload.method,
+          amountPaisa: Math.trunc(payload.amountPaisa),
+          isTest: true,
+          testType: payload.testType,
+        }),
       }),
-    });
+      firebaseIdTokenOrProvider,
+      fetchImpl
+    );
 
     if (res.status === 404 || res.status === 405 || res.status === 501) {
       return { supported: false };
@@ -503,7 +546,11 @@ export interface WorkerSimulatedIngestResult {
  */
 export async function submitSmsIngestWithSimulation(
   workerBaseUrl: string,
-  auth: { firebaseIdToken?: string; deviceKey?: string },
+  auth: {
+    firebaseIdToken?: string;
+    getFirebaseIdToken?: (forceRefresh?: boolean) => Promise<string>;
+    deviceKey?: string;
+  },
   payload: {
     storeId: string;
     sessionId: string;
@@ -522,24 +569,37 @@ export async function submitSmsIngestWithSimulation(
     return { supported: false };
   }
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-  if (auth.firebaseIdToken) {
-    headers.Authorization = `Bearer ${auth.firebaseIdToken}`;
-  } else if (auth.deviceKey) {
-    headers['x-device-key'] = auth.deviceKey;
-  } else {
+  const tokenProvider: AuthTokenProvider | null =
+    auth.getFirebaseIdToken ?? auth.firebaseIdToken ?? null;
+  if (!tokenProvider && !auth.deviceKey) {
     throw new Error('নিরাপত্তা নীতি: সিমুলেটেড SMS পাঠাতে অনুমোদিত পরিচয় প্রয়োজন।');
   }
 
   try {
-    const res = await fetchImpl(`${base}/sms/ingest`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    });
+    const res = tokenProvider
+      ? await fetchWithAuthRetry(
+          `${base}/sms/ingest`,
+          (token) => ({
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(payload),
+          }),
+          tokenProvider,
+          fetchImpl
+        )
+      : await fetchImpl(`${base}/sms/ingest`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'x-device-key': auth.deviceKey!,
+          },
+          body: JSON.stringify(payload),
+        });
 
     if (res.status === 404 || res.status === 405 || res.status === 501) {
       return { supported: false };
@@ -767,7 +827,7 @@ export async function validateSubscriptionClaimToken(
  */
 export async function redeemSubscriptionClaimToken(
   workerBaseUrl: string,
-  firebaseIdToken: string,
+  firebaseIdTokenOrProvider: AuthTokenProvider,
   payload: {
     purchaseId: string;
     claimToken: string;
@@ -779,15 +839,20 @@ export async function redeemSubscriptionClaimToken(
   if (!base) {
     throw new Error('পেমেন্ট সার্ভার (Worker URL) কনফিগার করা হয়নি।');
   }
-  const res = await fetchImpl(`${base}/subscription/claim`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${firebaseIdToken}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  const res = await fetchWithAuthRetry(
+    `${base}/subscription/claim`,
+    (token) => ({
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    }),
+    firebaseIdTokenOrProvider,
+    fetchImpl
+  );
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok || !body.ok) {
     const msg =

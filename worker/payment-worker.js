@@ -40,12 +40,98 @@ export async function sha256Hex(input) {
     .join('');
 }
 
+function normalizePhoneDigits(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('880')) return `0${digits.slice(3)}`;
+  if (digits.length === 10 && digits.startsWith('1')) return `0${digits}`;
+  return digits;
+}
+
 /**
  * Pure matching & hard safety rule guard shared across Worker handlers.
+ * Enforces strict multi-tenant isolation:
+ *  - A session belongs to 1 store -> 1 merchant (accountId) -> that merchant's paired active device ONLY.
+ *  - Merchant B's device / SMS / numbers can NEVER verify Merchant A's session.
+ *  - Revoked or inactive devices are strictly rejected.
  */
-export function evaluateWorkerSmsMatch({ session, sms, usedTrxIds, storeWebhookUrl, nowMs = Date.now() }) {
+export function evaluateWorkerSmsMatch({
+  session,
+  sms,
+  device = null,
+  usedTrxIds,
+  storeWebhookUrl,
+  nowMs = Date.now(),
+}) {
   const isSimulated = Boolean(sms.simulated);
   const trxId = String(sms.trxId || '').trim().toUpperCase();
+
+  // HARD TENANT ISOLATION RULE 1: Revoked or inactive device can NEVER verify any session
+  if (device && device.active === false) {
+    return {
+      ok: false,
+      httpStatus: 403,
+      failureCode: 'device_revoked',
+      failureReason: 'সংযুক্ত ডিভাইসটি বাতিল বা নিষ্ক্রিয় করা হয়েছে।',
+      webhookFired: false,
+    };
+  }
+
+  // HARD TENANT ISOLATION RULE 2: Device owner must strictly match session merchant accountId
+  if (
+    device &&
+    device.accountId &&
+    session.accountId &&
+    String(device.accountId) !== String(session.accountId)
+  ) {
+    return {
+      ok: false,
+      httpStatus: 403,
+      failureCode: 'tenant_mismatch',
+      failureReason: 'অন্য মার্চেন্টের অ্যাপ দিয়ে এই স্টোরের পেমেন্ট যাচাই করা নিষিদ্ধ।',
+      webhookFired: false,
+    };
+  }
+
+  // HARD TENANT ISOLATION RULE 3: SMS accountId (when present) must strictly match session accountId
+  if (
+    sms.accountId &&
+    session.accountId &&
+    String(sms.accountId) !== String(session.accountId)
+  ) {
+    return {
+      ok: false,
+      httpStatus: 403,
+      failureCode: 'tenant_mismatch',
+      failureReason: 'অন্য মার্চেন্টের অ্যাকাউন্টের SMS দিয়ে এই পেমেন্ট যাচাই করা নিষিদ্ধ।',
+      webhookFired: false,
+    };
+  }
+
+  // HARD TENANT ISOLATION RULE 4: If SMS carries a storeId, it must match the session storeId
+  if (sms.storeId && session.storeId && String(sms.storeId) !== String(session.storeId)) {
+    return {
+      ok: false,
+      httpStatus: 403,
+      failureCode: 'store_mismatch',
+      failureReason: 'ভিন্ন স্টোরের SMS দিয়ে এই সেশন যাচাই করা যাবে না।',
+      webhookFired: false,
+    };
+  }
+
+  // HARD TENANT ISOLATION RULE 5: If SMS includes receiverNumber, it must match the session's store receiving number
+  if (sms.receiverNumber && session.number) {
+    const smsRecv = normalizePhoneDigits(sms.receiverNumber);
+    const sessNum = normalizePhoneDigits(session.number);
+    if (smsRecv && sessNum && smsRecv !== sessNum) {
+      return {
+        ok: false,
+        httpStatus: 403,
+        failureCode: 'receiver_number_mismatch',
+        failureReason: 'ভিন্ন রিসিভিং নম্বরে আসা SMS দিয়ে এই সেশন যাচাই করা যাবে না।',
+        webhookFired: false,
+      };
+    }
+  }
 
   // HARD RULE: Simulation can NEVER verify a real (non-test) session
   if (isSimulated && session.isTest !== true) {

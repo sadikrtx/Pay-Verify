@@ -74,6 +74,33 @@ export function generateDocId(prefix: string): string {
   return `${prefix}_${hex}`;
 }
 
+export function generateWebhookSecret(length = 40): string {
+  const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const charsetLen = charset.length; // 62
+  const maxValidByte = Math.floor(256 / charsetLen) * charsetLen; // 248 (uniform sampling)
+
+  for (let attempt = 0; attempt < 16; attempt++) {
+    let result = '';
+    while (result.length < length) {
+      const buf = new Uint8Array(length * 2);
+      globalThis.crypto.getRandomValues(buf);
+      for (let i = 0; i < buf.length && result.length < length; i++) {
+        if (buf[i] < maxValidByte) {
+          result += charset[buf[i] % charsetLen];
+        }
+      }
+    }
+    if (/[A-Z]/.test(result) && /[a-z]/.test(result) && /[0-9]/.test(result)) {
+      return result;
+    }
+  }
+
+  // Fallback guaranteed mixed classes if 16 random draws missed a class
+  const buf = new Uint8Array(length);
+  globalThis.crypto.getRandomValues(buf);
+  return Array.from(buf, (b) => charset[b % charsetLen]).join('');
+}
+
 export function isSafeHttpUrl(raw: string): boolean {
   const trimmed = raw.trim();
   if (!trimmed) return true;

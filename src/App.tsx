@@ -53,6 +53,7 @@ type DashboardTab =
   | 'store_settings'
   | 'my_stores'
   | 'device'
+  | 'download_app'
   | 'api_docs'
   | 'changelog'
   | 'account'

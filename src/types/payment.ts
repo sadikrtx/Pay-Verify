@@ -11,6 +11,7 @@ export type TestFailureReasonCode = 'amount_mismatch' | 'expired' | 'trxid_used'
 
 export type PlanStatus = 'trial' | 'active' | 'suspended';
 export type PlanTier = 'basic' | 'pro'; // Stored for legacy backward compatibility only; unused in A2
+export type AccountActivationSource = 'purchase_claim' | 'admin_created' | 'self_registered';
 export type StoreType = 'own' | 'customer';
 export type StoreMemberRole = 'co-owner' | 'manager' | 'viewer';
 export type AddonKind = '+store' | '+device' | '+dailySessions';
@@ -257,6 +258,10 @@ export interface PayAccountDoc {
   dailySessionCapOverride: number | null;
   storeLimitOverride: number | null;
   ownedAddons: OwnedAddonEntry[];
+  activationSource?: AccountActivationSource | null;
+  purchaseId?: string | null;
+  createdByAdminUid?: string | null;
+  appDownloadedAtMs?: number | null;
   lastChangelogReadAtMs: number | null;
   tokensRevokedAtMs: number | null;
   createdAtMs: number;
@@ -526,6 +531,7 @@ export interface WorkerSessionStatusResponse {
   expectedAmountPaisa?: number | null;
   receivedAmountPaisa?: number | null;
   webhookFired?: boolean;
+  devicePaired?: boolean;
 }
 
 export interface WorkerCreateSessionResponse {

@@ -5,6 +5,8 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Eye,
+  EyeOff,
   KeyRound,
   Palette,
   RefreshCw,
@@ -16,9 +18,9 @@ import {
   X,
 } from 'lucide-react';
 import { usePayVerify } from '../lib/store';
+import { generateWebhookSecret } from '../lib/crypto';
 import { formatBanglaDateTime, parseTimestampMs } from '../lib/money';
 import { DEFAULT_STORE_ACCENT, type StoreMemberRole } from '../types/payment';
-import { ReauthModal } from './ReauthModal';
 import { PaymentMethodsManager } from './PaymentMethodsManager';
 
 const ROLE_LABELS_BN: Record<StoreMemberRole, string> = {
@@ -27,10 +29,8 @@ const ROLE_LABELS_BN: Record<StoreMemberRole, string> = {
   viewer: 'দর্শক (Viewer)',
 };
 
-type PendingSensitiveAction =
+type PendingConfirmAction =
   | { kind: 'rotate_key' }
-  | { kind: 'save_webhook' }
-  | { kind: 'add_member'; email: string; role: StoreMemberRole }
   | { kind: 'remove_member'; uid: string }
   | null;
 
@@ -54,6 +54,9 @@ export const StoreSettingsView: React.FC = () => {
   const [accentColor, setAccentColor] = useState(DEFAULT_STORE_ACCENT);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookSecretInput, setWebhookSecretInput] = useState('');
+  const [showWebhookSecret, setShowWebhookSecret] = useState(false);
+  const [copiedWebhookSecret, setCopiedWebhookSecret] = useState(false);
+  const [confirmReplaceSecret, setConfirmReplaceSecret] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,8 +74,8 @@ export const StoreSettingsView: React.FC = () => {
   const [memberError, setMemberError] = useState<string | null>(null);
   const [memberSuccess, setMemberSuccess] = useState<string | null>(null);
 
-  // Re-auth Gate for Sensitive Actions
-  const [pendingSensitive, setPendingSensitive] = useState<PendingSensitiveAction>(null);
+  // Lightweight confirmation for destructive actions (NO re-login prompt)
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmAction>(null);
 
   useEffect(() => {
     if (!selectedStore) return;
@@ -83,6 +86,9 @@ export const StoreSettingsView: React.FC = () => {
     setAccentColor(selectedStore.accentColor || DEFAULT_STORE_ACCENT);
     setWebhookUrl(selectedStore.webhookUrl);
     setWebhookSecretInput('');
+    setShowWebhookSecret(false);
+    setCopiedWebhookSecret(false);
+    setConfirmReplaceSecret(false);
     setError(null);
     setSavedNotice(false);
   }, [selectedStore]);
@@ -117,6 +123,9 @@ export const StoreSettingsView: React.FC = () => {
         webhookSecret: webhookSecretInput || undefined,
       });
       setWebhookSecretInput('');
+      setShowWebhookSecret(false);
+      setCopiedWebhookSecret(false);
+      setConfirmReplaceSecret(false);
       setSavedNotice(true);
       window.setTimeout(() => setSavedNotice(false), 3000);
     } catch (err) {
@@ -126,16 +135,52 @@ export const StoreSettingsView: React.FC = () => {
     }
   };
 
+  const applyFreshGeneratedSecret = () => {
+    const fresh = generateWebhookSecret(40);
+    setWebhookSecretInput(fresh);
+    setConfirmReplaceSecret(false);
+    setCopiedWebhookSecret(false);
+  };
+
+  const handleGenerateWebhookSecretClick = () => {
+    if (!canEdit) return;
+    if (webhookSecretInput.length > 0) {
+      setConfirmReplaceSecret(true);
+      return;
+    }
+    applyFreshGeneratedSecret();
+  };
+
+  const handleCopyWebhookSecret = async () => {
+    if (!webhookSecretInput) return;
+    try {
+      await navigator.clipboard.writeText(webhookSecretInput);
+      setCopiedWebhookSecret(true);
+      window.setTimeout(() => setCopiedWebhookSecret(false), 2000);
+    } catch {
+      try {
+        const el = document.createElement('textarea');
+        el.value = webhookSecretInput;
+        el.setAttribute('readonly', '');
+        el.style.position = 'fixed';
+        el.style.opacity = '0';
+        document.body.appendChild(el);
+        el.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(el);
+        if (ok) {
+          setCopiedWebhookSecret(true);
+          window.setTimeout(() => setCopiedWebhookSecret(false), 2000);
+        }
+      } catch {
+        // Ignore clipboard unavailability
+      }
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canEdit) return;
-    const webhookChanged =
-      webhookUrl.trim() !== (selectedStore.webhookUrl || '').trim() ||
-      webhookSecretInput.trim().length > 0;
-    if (webhookChanged) {
-      setPendingSensitive({ kind: 'save_webhook' });
-      return;
-    }
     await persistStoreSettings();
   };
 
@@ -164,16 +209,10 @@ export const StoreSettingsView: React.FC = () => {
     }
   };
 
-  const handleAddMemberSubmit = (e: React.FormEvent) => {
+  const handleAddMemberSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedStoreIsPaused) return;
-    setMemberError(null);
-    setMemberSuccess(null);
-    setPendingSensitive({
-      kind: 'add_member',
-      email: memberEmail.trim(),
-      role: memberRole,
-    });
+    await executeAddMember(memberEmail.trim(), memberRole);
   };
 
   const executeAddMember = async (email: string, role: StoreMemberRole) => {
@@ -205,50 +244,16 @@ export const StoreSettingsView: React.FC = () => {
     }
   };
 
-  const handleReauthConfirmed = async () => {
-    const action = pendingSensitive;
-    setPendingSensitive(null);
+  const handleConfirmDestructive = async () => {
+    const action = pendingConfirm;
+    setPendingConfirm(null);
     if (!action) return;
     if (action.kind === 'rotate_key') {
       await executeRotateKey();
-    } else if (action.kind === 'save_webhook') {
-      await persistStoreSettings();
-    } else if (action.kind === 'add_member') {
-      await executeAddMember(action.email, action.role);
     } else if (action.kind === 'remove_member') {
       await executeRemoveMember(action.uid);
     }
   };
-
-  const getReauthCopy = (): { title: string; description: string } => {
-    if (!pendingSensitive) return { title: '', description: '' };
-    if (pendingSensitive.kind === 'rotate_key') {
-      return {
-        title: 'স্টোর কী রোটেশন নিশ্চিত করুন',
-        description:
-          'নতুন স্টোর কী তৈরি করলে পুরোনো কী সাথে সাথেই বাতিল হয়ে যাবে। এগিয়ে যেতে আপনার পরিচয় পুনরায় যাচাই করুন।',
-      };
-    }
-    if (pendingSensitive.kind === 'save_webhook') {
-      return {
-        title: 'ওয়েববুক পরিবর্তন নিশ্চিত করুন',
-        description:
-          'ওয়েববুক URL বা সিক্রেট পরিবর্তন একটি সংবেদনশীল কাজ। সংরক্ষণ করতে আপনার পরিচয় পুনরায় যাচাই করুন।',
-      };
-    }
-    if (pendingSensitive.kind === 'add_member') {
-      return {
-        title: 'নতুন মেম্বার যুক্ত নিশ্চিত করুন',
-        description: `${pendingSensitive.email}-কে এই স্টোরে যুক্ত করতে আপনার পরিচয় পুনরায় যাচাই করুন।`,
-      };
-    }
-    return {
-      title: 'মেম্বার সরানো নিশ্চিত করুন',
-      description: 'এই টিম মেম্বারের অ্যাক্সেস সরাতে আপনার পরিচয় পুনরায় যাচাই করুন।',
-    };
-  };
-
-  const reauthCopy = getReauthCopy();
 
   const memberEntries = Object.entries(selectedStore.memberRoles) as Array<
     [string, StoreMemberRole]
@@ -440,8 +445,8 @@ export const StoreSettingsView: React.FC = () => {
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <div className="lg:col-span-5">
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Webhook URL
               </label>
@@ -455,22 +460,118 @@ export const StoreSettingsView: React.FC = () => {
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+            <div className="lg:col-span-7">
+              <label
+                htmlFor="store-webhook-secret-input"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
                 Webhook Secret {selectedStore.webhookSecretSet ? '(নতুন দিতে লিখুন)' : ''}
               </label>
-              <input
-                type="password"
-                disabled={!canEdit}
-                value={webhookSecretInput}
-                onChange={(e) => setWebhookSecretInput(e.target.value)}
-                placeholder={
-                  selectedStore.webhookSecretSet
-                    ? 'সেট করা আছে (পরিবর্তন করতে নতুন দিন)'
-                    : 'নতুন ওয়েববুক সিক্রেট লিখুন'
-                }
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 font-mono text-xs text-slate-900 disabled:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-teal-500"
-              />
+              <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                <div className="relative flex-1 min-w-[180px]">
+                  <input
+                    id="store-webhook-secret-input"
+                    data-testid="webhook-secret-input"
+                    type={showWebhookSecret ? 'text' : 'password'}
+                    disabled={!canEdit}
+                    autoComplete="new-password"
+                    value={webhookSecretInput}
+                    onChange={(e) => {
+                      setWebhookSecretInput(e.target.value);
+                      if (confirmReplaceSecret) setConfirmReplaceSecret(false);
+                      if (copiedWebhookSecret) setCopiedWebhookSecret(false);
+                    }}
+                    placeholder={
+                      selectedStore.webhookSecretSet
+                        ? 'সেট করা আছে (পরিবর্তন করতে নতুন দিন)'
+                        : 'নতুন ওয়েববুক সিক্রেট লিখুন'
+                    }
+                    className="w-full pl-3.5 pr-9 py-2.5 rounded-xl border border-slate-200 font-mono text-xs text-slate-900 disabled:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={!canEdit}
+                    data-testid="toggle-webhook-secret-visibility-btn"
+                    onClick={() => setShowWebhookSecret((v) => !v)}
+                    aria-label={showWebhookSecret ? 'সিক্রেট লুকান' : 'সিক্রেট দেখান'}
+                    title={showWebhookSecret ? 'সিক্রেট লুকান' : 'সিক্রেট দেখান'}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                  >
+                    {showWebhookSecret ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={!canEdit}
+                    data-testid="generate-webhook-secret-btn"
+                    onClick={handleGenerateWebhookSecretClick}
+                    className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-indigo-700" />
+                    Generate
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!webhookSecretInput}
+                    data-testid="copy-webhook-secret-btn"
+                    onClick={() => void handleCopyWebhookSecret()}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl border text-xs font-semibold transition-colors disabled:opacity-50 ${
+                      copiedWebhookSecret
+                        ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {copiedWebhookSecret ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        কপি হয়েছে
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        Copy
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {confirmReplaceSecret && (
+                <div
+                  data-testid="confirm-replace-webhook-secret"
+                  className="mt-2 flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900"
+                >
+                  <span className="font-medium">আগের secret বদলে যাবে</span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="confirm-replace-webhook-secret-yes"
+                      onClick={applyFreshGeneratedSecret}
+                      className="px-2.5 py-1 rounded-lg bg-amber-700 text-white font-semibold hover:bg-amber-800"
+                    >
+                      বদলে দিন
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="confirm-replace-webhook-secret-cancel"
+                      onClick={() => setConfirmReplaceSecret(false)}
+                      className="px-2.5 py-1 rounded-lg border border-amber-300 bg-white text-amber-900 font-semibold hover:bg-amber-100"
+                    >
+                      বাতিল
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                এই একই secret-টি connected app-এর (যেমন XADIK AI) Billing Settings-এও বসাতে হবে — দুই জায়গায় হুবহু এক না হলে webhook মিলবে না।
+              </p>
             </div>
           </div>
 
@@ -531,7 +632,7 @@ export const StoreSettingsView: React.FC = () => {
             <button
               type="button"
               disabled={rotating}
-              onClick={() => setPendingSensitive({ kind: 'rotate_key' })}
+              onClick={() => setPendingConfirm({ kind: 'rotate_key' })}
               data-testid="rotate-store-key-btn"
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-amber-300 bg-amber-50 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
             >
@@ -627,7 +728,7 @@ export const StoreSettingsView: React.FC = () => {
                   <button
                     type="button"
                     disabled={memberBusy}
-                    onClick={() => setPendingSensitive({ kind: 'remove_member', uid })}
+                    onClick={() => setPendingConfirm({ kind: 'remove_member', uid })}
                     className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-700 hover:bg-rose-100"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -640,14 +741,52 @@ export const StoreSettingsView: React.FC = () => {
         )}
       </div>
 
-      {/* Password / Google Re-auth Modal for Sensitive Store Actions */}
-      <ReauthModal
-        open={pendingSensitive !== null}
-        actionTitle={reauthCopy.title}
-        actionDescription={reauthCopy.description}
-        onCancel={() => setPendingSensitive(null)}
-        onConfirmed={handleReauthConfirmed}
-      />
+      {/* Simple Inline Confirmation Dialog for Destructive Actions (no re-login required) */}
+      {pendingConfirm && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                {pendingConfirm.kind === 'rotate_key'
+                  ? 'স্টোর কী পরিবর্তন করবেন?'
+                  : 'টিম মেম্বার সরাবেন?'}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setPendingConfirm(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {pendingConfirm.kind === 'rotate_key'
+                ? 'নতুন স্টোর কী তৈরি করলে পুরোনো কী সাথে সাথেই বাতিল হয়ে যাবে।'
+                : 'এই টিম মেম্বার আর এই স্টোরে অ্যাক্সেস করতে পারবেন না।'}
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setPendingConfirm(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                বাতিল
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmDestructive()}
+                className="px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700"
+              >
+                নিশ্চিত করুন
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* One-Time Store Key Display Modal */}
       {newStoreKey && (

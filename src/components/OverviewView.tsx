@@ -29,6 +29,7 @@ export type OverviewTargetTab =
   | 'store_settings'
   | 'my_stores'
   | 'device'
+  | 'download_app'
   | 'api_docs';
 
 interface OverviewViewProps {

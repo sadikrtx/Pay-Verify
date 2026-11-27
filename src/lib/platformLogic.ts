@@ -312,34 +312,52 @@ export function evaluateDeviceFreshness(
 }
 
 export interface SetupChecklistStep {
-  id: 'device' | 'numbers' | 'test_payment' | 'live';
+  id: 'store_and_numbers' | 'download_app' | 'device' | 'test_payment' | 'live';
   labelBn: string;
+  descriptionBn: string;
+  actionLabelBn: string;
   done: boolean;
-  targetTab: 'device' | 'store_settings' | 'sessions' | 'api_docs';
+  targetTab: 'my_stores' | 'store_settings' | 'download_app' | 'device' | 'sessions' | 'api_docs';
 }
 
 export interface SetupChecklistState {
   steps: SetupChecklistStep[];
   completedCount: number;
+  totalCount: number;
   allDone: boolean;
 }
 
+export interface SetupChecklistOptions {
+  appDownloaded?: boolean;
+}
+
+function storeHasAnyEnabledNumber(store: PayStoreDoc | null): boolean {
+  if (!store) return false;
+  const methods = ['bkash', 'nagad', 'rocket', 'upay'] as const;
+  return methods.some((m) => {
+    if (!store.numberEnabled[m]) return false;
+    const accList = store.paymentAccounts?.[m];
+    if (Array.isArray(accList) && accList.length > 0) {
+      return accList.some((entry) => entry.active && entry.number.trim().length === 11);
+    }
+    return store.numbers[m].trim().length === 11;
+  });
+}
+
 /**
- * Feature #3: Real Overview setup checklist computed from Firestore data.
- * Disappears automatically once all 4 steps are done.
+ * Prompt 33 Part B — Merchant's Own Setup Checklist (computed strictly from real Firestore state).
+ * Works even when the merchant has 0 stores yet.
+ * Disappears automatically once all steps are genuinely complete.
  */
 export function computeSetupChecklist(
   store: PayStoreDoc | null,
   devices: PayDeviceDoc[],
-  storeSessions: PaySessionDoc[]
+  storeSessions: PaySessionDoc[],
+  options: SetupChecklistOptions = {}
 ): SetupChecklistState {
   const hasPairedDevice = devices.some((d) => d.active);
-  const hasEnabledNumber = Boolean(
-    store &&
-      (['bkash', 'nagad', 'rocket', 'upay'] as const).some(
-        (m) => store.numberEnabled[m] && store.numbers[m].trim().length === 11
-      )
-  );
+  const hasStoreAndNumber = storeHasAnyEnabledNumber(store);
+  const hasDownloadedApp = Boolean(options.appDownloaded) || hasPairedDevice;
   const hasConfirmedSession = storeSessions.some(
     (s) =>
       s.status === 'paid' ||
@@ -353,26 +371,42 @@ export function computeSetupChecklist(
 
   const steps: SetupChecklistStep[] = [
     {
+      id: 'store_and_numbers',
+      labelBn: 'স্টোর তৈরি ও নিজের নম্বর সেভ',
+      descriptionBn: 'স্টোর তৈরি করে নিজের bKash/Nagad/Rocket/Upay নম্বর সেভ ও চালু করুন',
+      actionLabelBn: store ? 'নম্বর সেট করুন' : 'স্টোর তৈরি করুন',
+      done: hasStoreAndNumber,
+      targetTab: store ? 'store_settings' : 'my_stores',
+    },
+    {
+      id: 'download_app',
+      labelBn: 'Android অ্যাপ ডাউনলোড',
+      descriptionBn: 'আপনার নিজের ফোনে PayVerify Android অ্যাপ ইনস্টল করুন',
+      actionLabelBn: 'অ্যাপ ডাউনলোড করুন',
+      done: hasDownloadedApp,
+      targetTab: 'download_app',
+    },
+    {
       id: 'device',
-      labelBn: 'ফোন সংযোগ',
+      labelBn: 'নিজের ফোন পেয়ার করুন',
+      descriptionBn: 'এককালীন QR দিয়ে আপনার অ্যাকাউন্টে নিজের ফোন সংযুক্ত করুন',
+      actionLabelBn: 'ফোন পেয়ার করুন',
       done: hasPairedDevice,
       targetTab: 'device',
     },
     {
-      id: 'numbers',
-      labelBn: 'পেমেন্ট নম্বর সেট',
-      done: hasEnabledNumber,
-      targetTab: 'store_settings',
-    },
-    {
       id: 'test_payment',
       labelBn: 'টেস্ট পেমেন্ট',
+      descriptionBn: 'আপনার স্টোরে একটি টেস্ট পেমেন্ট যাচাই করে নিশ্চিত হোন',
+      actionLabelBn: 'টেস্ট যাচাই',
       done: hasConfirmedSession,
       targetTab: 'sessions',
     },
     {
       id: 'live',
       labelBn: 'লাইভ',
+      descriptionBn: 'স্টোর লাইভ করুন ও আসল অর্ডার গ্রহণ শুরু করুন',
+      actionLabelBn: 'ইন্টিগ্রেশন দেখুন',
       done: hasLiveSession,
       targetTab: 'api_docs',
     },
@@ -382,6 +416,7 @@ export function computeSetupChecklist(
   return {
     steps,
     completedCount,
+    totalCount: steps.length,
     allDone: completedCount === steps.length,
   };
 }

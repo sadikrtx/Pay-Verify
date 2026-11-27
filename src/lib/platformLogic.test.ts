@@ -185,9 +185,9 @@ test('computeSetupChecklist hides card once all 4 real steps are complete', () =
   assert.equal(incomplete.allDone, false);
   assert.equal(incomplete.completedCount, 1); // numbers set only
 
-  const complete = computeSetupChecklist(store, [device], [paidSession]);
+  const complete = computeSetupChecklist(store, [device], [paidSession], { appDownloaded: true });
   assert.equal(complete.allDone, true);
-  assert.equal(complete.completedCount, 4);
+  assert.equal(complete.completedCount, 5);
 });
 
 test('computeSuperAdminNotifications surfaces new signups, expiring trials, expired paidUntil, and 6h offline devices', () => {

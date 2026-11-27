@@ -1936,11 +1936,23 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setAuthReady(true);
         } catch (err) {
           adminPortalCheckingRef.current = false;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('INTERNAL ASSERTION FAILED') || msg.includes('popup') || msg.includes('cancelled')) {
+            throw new Error('ব্রাউজার পপআপ ব্লক করা হয়েছে বা আইফ্রেম পরিবেশে পপআপ সম্ভব নয়। অনুগ্রহ করে ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন।');
+          }
           throw err;
         }
         return;
       }
-      await signInWithPopup(auth, googleProvider);
+      try {
+        await signInWithPopup(auth, googleProvider);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('INTERNAL ASSERTION FAILED') || msg.includes('popup') || msg.includes('cancelled')) {
+          throw new Error('ব্রাউজার পপআপ ব্লক করা হয়েছে বা আইফ্রেম পরিবেশে পপআপ সম্ভব নয়। অনুগ্রহ করে ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন।');
+        }
+        throw err;
+      }
     },
     [isAutoTest, verifyAdminPortalAuthorization]
   );

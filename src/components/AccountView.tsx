@@ -35,7 +35,6 @@ import {
   type PaySessionDoc,
   type WalletMethod,
 } from '../types/payment';
-import { ReauthModal } from './ReauthModal';
 import { PaymentLogo } from './PaymentLogo';
 
 function todayIsoDate(): string {
@@ -96,7 +95,6 @@ export const AccountView: React.FC<AccountViewProps> = ({ onOpenPlanComparison }
     sessionId: string;
     paymentPath: string;
   } | null>(null);
-  const [reauthForCheckout, setReauthForCheckout] = useState(false);
 
   // Printable Receipt Modal
   const [receiptTarget, setReceiptTarget] = useState<PaySessionDoc | null>(null);
@@ -178,7 +176,6 @@ export const AccountView: React.FC<AccountViewProps> = ({ onOpenPlanComparison }
   };
 
   const executeCheckoutAfterReauth = async () => {
-    setReauthForCheckout(false);
     setCheckoutError(null);
     setCheckoutBusy(true);
     try {
@@ -869,7 +866,7 @@ export const AccountView: React.FC<AccountViewProps> = ({ onOpenPlanComparison }
                   <button
                     type="button"
                     disabled={checkoutBusy || baseCheckoutPrice <= 0}
-                    onClick={() => setReauthForCheckout(true)}
+                    onClick={() => void executeCheckoutAfterReauth()}
                     className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:opacity-50"
                   >
                     {checkoutBusy ? 'শুরু হচ্ছে...' : 'পেমেন্ট শুরু করুন'}
@@ -959,15 +956,6 @@ export const AccountView: React.FC<AccountViewProps> = ({ onOpenPlanComparison }
           </div>
         </div>
       )}
-
-      {/* Password / Google Re-auth before Plan / Add-on Checkout */}
-      <ReauthModal
-        open={reauthForCheckout}
-        actionTitle="ক্রয় নিশ্চিত করুন"
-        actionDescription="প্ল্যান আপগ্রেড বা অ্যাড-অন কেনার আগে নিরাপত্তার জন্য পুনরায় যাচাই করুন।"
-        onCancel={() => setReauthForCheckout(false)}
-        onConfirmed={executeCheckoutAfterReauth}
-      />
     </div>
   );
 };
