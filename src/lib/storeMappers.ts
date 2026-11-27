@@ -8,12 +8,14 @@ import {
   syncLegacyNumbersFromAccounts,
 } from './checkoutFlow';
 import { cloneDefaultLandingConfig, normalizeLandingConfig } from './landingConfig';
+import { normalizeStaffRuleMatrix } from './staffRoles';
 import {
   DEFAULT_STORE_ACCENT,
   SEEDED_PLAN_IDS,
   TRIAL_DURATION_MS,
   type AddonKind,
   type LastWebhookInfo,
+  type MerchantSupportNoteDoc,
   type OwnedAddonEntry,
   type PairingTokenDoc,
   type PayAccountDoc,
@@ -32,6 +34,8 @@ import {
   type PaySubscriptionPurchaseDoc,
   type PlanStatus,
   type PlanTier,
+  type StaffMemberDoc,
+  type StaffRoleDoc,
   type StoreMemberRole,
   type SubscriptionPurchaseStatus,
   type WalletMethod,
@@ -452,6 +456,9 @@ const VALID_ACTIVITY_TARGETS = [
   'device',
   'session',
   'app_release',
+  'staff',
+  'role',
+  'merchant_note',
 ] as const;
 
 export function mapActivity(id: string, d: DocumentData): PayActivityDoc {
@@ -464,6 +471,9 @@ export function mapActivity(id: string, d: DocumentData): PayActivityDoc {
     id,
     actorAccountId: String(d.actorAccountId || ''),
     actorEmail: typeof d.actorEmail === 'string' ? d.actorEmail : undefined,
+    actorName: typeof d.actorName === 'string' ? d.actorName : null,
+    actorRoleId: typeof d.actorRoleId === 'string' ? d.actorRoleId : null,
+    actorRoleName: typeof d.actorRoleName === 'string' ? d.actorRoleName : null,
     accountId: typeof d.accountId === 'string' ? d.accountId : undefined,
     type: typeof d.type === 'string' ? d.type : undefined,
     action: String(d.action || ''),
@@ -495,4 +505,55 @@ export function mapAppRelease(id: string, d: DocumentData) {
     updatedAtMs: parseTimestampMs(d.updatedAt),
   };
 }
+
+export function mapStaffRole(id: string, d: DocumentData): StaffRoleDoc {
+  return {
+    id,
+    name: String(d.name || 'রোল').trim(),
+    rules: normalizeStaffRuleMatrix(d.rules),
+    isStarter: Boolean(d.isStarter),
+    createdAtMs: parseTimestampMs(d.createdAt) ?? Date.now(),
+    updatedAtMs: parseTimestampMs(d.updatedAt),
+  };
+}
+
+export function mapStaffMember(id: string, d: DocumentData): StaffMemberDoc {
+  const hasCustomOverride = Boolean(d.hasCustomOverride);
+  const overrideRules =
+    hasCustomOverride && d.overrideRules ? normalizeStaffRuleMatrix(d.overrideRules) : null;
+  const effectiveRules = normalizeStaffRuleMatrix(d.effectiveRules ?? d.overrideRules);
+  return {
+    id,
+    name: String(d.name || '').trim(),
+    email: String(d.email || '').trim().toLowerCase(),
+    phone: String(d.phone || '').trim(),
+    roleId: String(d.roleId || '').trim(),
+    roleName: String(d.roleName || 'রোল').trim(),
+    hasCustomOverride,
+    overrideRules,
+    effectiveRules,
+    status: d.status === 'disabled' ? 'disabled' : 'active',
+    mustChangePassword: Boolean(d.mustChangePassword),
+    lastLoginAtMs: parseTimestampMs(d.lastLoginAt),
+    createdAtMs: parseTimestampMs(d.createdAt) ?? Date.now(),
+    updatedAtMs: parseTimestampMs(d.updatedAt),
+  };
+}
+
+export function mapMerchantSupportNote(id: string, d: DocumentData): MerchantSupportNoteDoc {
+  return {
+    id,
+    merchantAccountId: String(d.merchantAccountId || '').trim(),
+    merchantEmail: String(d.merchantEmail || '').trim(),
+    body: String(d.body || '').trim(),
+    authorUid: String(d.authorUid || '').trim(),
+    authorName: String(d.authorName || '').trim(),
+    authorEmail: String(d.authorEmail || '').trim(),
+    authorRoleName: String(d.authorRoleName || '').trim(),
+    createdAtMs: parseTimestampMs(d.createdAt) ?? Date.now(),
+    updatedAtMs: parseTimestampMs(d.updatedAt),
+  };
+}
+
+
 

@@ -214,10 +214,30 @@
       "properties": {
         "actorAccountId": { "type": "string", "maxLength": 128 },
         "actorEmail": { "type": "string", "maxLength": 160 },
+        "actorName": { "type": "string", "maxLength": 80 },
+        "actorRoleId": { "type": "string", "maxLength": 128 },
+        "actorRoleName": { "type": "string", "maxLength": 80 },
         "accountId": { "type": "string", "maxLength": 128 },
         "type": { "type": "string", "maxLength": 48 },
         "action": { "type": "string", "maxLength": 64 },
-        "targetType": { "type": "string", "enum": ["account", "store", "platform", "plan", "addon", "coupon", "changelog", "device", "session", "app_release"] },
+        "targetType": {
+          "type": "string",
+          "enum": [
+            "account",
+            "store",
+            "platform",
+            "plan",
+            "addon",
+            "coupon",
+            "changelog",
+            "device",
+            "session",
+            "app_release",
+            "staff",
+            "role",
+            "merchant_note"
+          ]
+        },
         "targetId": { "type": "string", "maxLength": 128 },
         "detail": { "type": "string", "maxLength": 400 },
         "note": { "type": "string", "maxLength": 300 },
@@ -335,7 +355,7 @@
     },
     "AppRelease": {
       "title": "AppRelease",
-      "description": "Android APK release metadata managed exclusively by Super Admin. Public readers can view only the published release and increment downloadCount by 1.",
+      "description": "Android APK release metadata managed by Super Admin or authorized Staff. Public readers can view only the published release and increment downloadCount by 1.",
       "type": "object",
       "properties": {
         "versionName": { "type": "string", "minLength": 1, "maxLength": 40 },
@@ -363,6 +383,77 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "StaffRole": {
+      "title": "StaffRole",
+      "description": "Super Admin defined custom role with a 6-area granular rule matrix (view, create, edit, delete, plus export on reports).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "rules": { "type": "object" },
+        "isStarter": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "rules", "createdAt", "updatedAt"]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Staff account managed exclusively by Super Admin, storing roleId, roleName, optional customRuleOverride, effectiveRules, active status, and mustChangePassword flag.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 24 },
+        "roleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "roleName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "hasCustomOverride": { "type": "boolean" },
+        "overrideRules": { "type": "object" },
+        "effectiveRules": { "type": "object" },
+        "status": { "type": "string", "enum": ["active", "disabled"] },
+        "mustChangePassword": { "type": "boolean" },
+        "lastLoginAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "name",
+        "email",
+        "phone",
+        "roleId",
+        "roleName",
+        "hasCustomOverride",
+        "effectiveRules",
+        "status",
+        "mustChangePassword",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MerchantSupportNote": {
+      "title": "MerchantSupportNote",
+      "description": "Support comment or merchant note written by Super Admin or authorized Staff on a merchant account.",
+      "type": "object",
+      "properties": {
+        "merchantAccountId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "merchantEmail": { "type": "string", "maxLength": 160 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 1200 },
+        "authorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "authorEmail": { "type": "string", "maxLength": 160 },
+        "authorRoleName": { "type": "string", "maxLength": 80 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "merchantAccountId",
+        "body",
+        "authorUid",
+        "authorName",
+        "authorRoleName",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -380,7 +471,7 @@
     },
     "/payPlans/{planId}": {
       "schema": { "$ref": "#/entities/PayPlan" },
-      "description": "Owner-defined subscription plans; visible plans readable on marketing page and by signed-in merchants; writes strictly Super Admin only; archive-only (no delete)."
+      "description": "Owner-defined subscription plans; visible plans readable on marketing page and by signed-in merchants; writes by Super Admin or staff with plans create/edit."
     },
     "/payAddons/{addonId}": {
       "schema": { "$ref": "#/entities/PayAddon" },
@@ -400,7 +491,7 @@
     },
     "/payAccounts/{accountId}": {
       "schema": { "$ref": "#/entities/PayAccount" },
-      "description": "Merchant and Super Admin accounts; isolated to self or Super Admin."
+      "description": "Merchant and Super Admin accounts; isolated to self, Super Admin, or active staff with merchants permissions."
     },
     "/payStores/{storeId}": {
       "schema": { "$ref": "#/entities/PayStore" },
@@ -408,11 +499,11 @@
     },
     "/payActivity/{entryId}": {
       "schema": { "$ref": "#/entities/PayActivity" },
-      "description": "Audit log: Super Admin reads/writes all; account owners read only their own accountId entries and may create only type='login' entries for themselves."
+      "description": "Audit log: Super Admin reads/writes all; active staff can write their own audited actions; account owners read only their own accountId entries and may create only type='login' entries for themselves."
     },
     "/paySessions/{sessionId}": {
       "schema": { "$ref": "#/entities/PaySession" },
-      "description": "Store payment sessions; isolated by accountId, memberUids, or subscriptionRefAccountId (receipts); Super Admin read-only for other accounts."
+      "description": "Store payment sessions; isolated by accountId, memberUids, subscriptionRefAccountId (receipts), Super Admin, or active staff with payments permissions."
     },
     "/paySms/{smsId}": {
       "schema": { "$ref": "#/entities/PaySms" },
@@ -432,7 +523,20 @@
     },
     "/appReleases/{releaseId}": {
       "schema": { "$ref": "#/entities/AppRelease" },
-      "description": "Android App APK releases; Super Admin full CRUD; public can read only published == true releases and atomically increment downloadCount by +1."
+      "description": "Android App APK releases; Super Admin and authorized Staff CRUD; public can read only published == true releases and atomically increment downloadCount by +1."
+    },
+    "/roles/{roleId}": {
+      "schema": { "$ref": "#/entities/StaffRole" },
+      "description": "Custom staff roles and rule matrix; Super Admin full CRUD; signed-in staff can get their own role doc."
+    },
+    "/staff/{staffUid}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Staff accounts and effective rules; Super Admin full CRUD; staff member can get their own doc and update only lastLoginAt/mustChangePassword."
+    },
+    "/merchantSupportNotes/{noteId}": {
+      "schema": { "$ref": "#/entities/MerchantSupportNote" },
+      "description": "Merchant support comments/notes managed by Super Admin and staff with merchant_notes view/create/edit/delete permissions."
     }
   }
 }
+

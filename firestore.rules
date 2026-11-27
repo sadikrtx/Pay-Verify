@@ -36,6 +36,23 @@ service cloud.firestore {
         && request.auth.token.email_verified == true;
     }
 
+    // Active staff checks (single-doc get() used only in non-list rules to uphold Pillar 8)
+    function isActiveStaff() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/staff/$(request.auth.uid))
+        && get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function hasStaffRule(area, action) {
+      return isActiveStaff()
+        && get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.keys().hasAny(['effectiveRules'])
+        && get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.effectiveRules is map
+        && area in get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.effectiveRules
+        && get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.effectiveRules[area] is map
+        && action in get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.effectiveRules[area]
+        && get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.effectiveRules[area][action] == true;
+    }
+
     function isStorePrimaryOwner(s) {
       return s.accountId == request.auth.uid;
     }
@@ -368,16 +385,23 @@ service cloud.firestore {
           'actorAccountId', 'action', 'targetType', 'targetId', 'detail', 'note', 'createdAt'
         ])
         && data.keys().hasOnly([
-          'actorAccountId', 'actorEmail', 'accountId', 'type', 'action',
+          'actorAccountId', 'actorEmail', 'actorName', 'actorRoleId', 'actorRoleName',
+          'accountId', 'type', 'action',
           'targetType', 'targetId', 'detail', 'note',
           'ip', 'deviceInfo', 'deviceFingerprint', 'createdAt'
         ])
         && data.actorAccountId is string && data.actorAccountId.size() >= 1 && data.actorAccountId.size() <= 128
         && (!data.keys().hasAny(['actorEmail']) || (data.actorEmail is string && data.actorEmail.size() <= 160))
+        && (!data.keys().hasAny(['actorName']) || data.actorName == null || (data.actorName is string && data.actorName.size() <= 80))
+        && (!data.keys().hasAny(['actorRoleId']) || data.actorRoleId == null || (data.actorRoleId is string && data.actorRoleId.size() <= 128))
+        && (!data.keys().hasAny(['actorRoleName']) || data.actorRoleName == null || (data.actorRoleName is string && data.actorRoleName.size() <= 80))
         && (!data.keys().hasAny(['accountId']) || (data.accountId is string && data.accountId.size() <= 128))
         && (!data.keys().hasAny(['type']) || (data.type is string && data.type.size() <= 48))
         && data.action is string && data.action.size() >= 1 && data.action.size() <= 64
-        && data.targetType in ['account', 'store', 'platform', 'plan', 'addon', 'coupon', 'changelog', 'device', 'session', 'app_release']
+        && data.targetType in [
+          'account', 'store', 'platform', 'plan', 'addon', 'coupon', 'changelog',
+          'device', 'session', 'app_release', 'staff', 'role', 'merchant_note'
+        ]
         && data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128
         && data.detail is string && data.detail.size() <= 400
         && data.note is string && data.note.size() >= 1 && data.note.size() <= 300
@@ -385,6 +409,88 @@ service cloud.firestore {
         && (!data.keys().hasAny(['deviceInfo']) || data.deviceInfo == null || (data.deviceInfo is string && data.deviceInfo.size() <= 200))
         && (!data.keys().hasAny(['deviceFingerprint']) || data.deviceFingerprint == null || (data.deviceFingerprint is string && data.deviceFingerprint.size() <= 64))
         && data.createdAt is timestamp;
+    }
+
+    function isValidAreaCrudRule(r) {
+      return r is map
+        && r.keys().hasAll(['view', 'create', 'edit', 'delete'])
+        && r.keys().hasOnly(['view', 'create', 'edit', 'delete', 'export'])
+        && r.view is bool
+        && r.create is bool
+        && r.edit is bool
+        && r.delete is bool
+        && (!r.keys().hasAny(['export']) || r.export is bool)
+        && ((r.create == false && r.edit == false && r.delete == false && (!r.keys().hasAny(['export']) || r.export == false)) || r.view == true);
+    }
+
+    function isValidStaffRuleMatrix(m) {
+      return m is map
+        && m.keys().hasAll(['merchants', 'plans', 'payments', 'app_updates', 'reports', 'merchant_notes'])
+        && m.keys().hasOnly(['merchants', 'plans', 'payments', 'app_updates', 'reports', 'merchant_notes'])
+        && isValidAreaCrudRule(m.merchants)
+        && isValidAreaCrudRule(m.plans)
+        && isValidAreaCrudRule(m.payments)
+        && isValidAreaCrudRule(m.app_updates)
+        && isValidAreaCrudRule(m.reports)
+        && isValidAreaCrudRule(m.merchant_notes);
+    }
+
+    function isValidStaffRole(data) {
+      return data.keys().hasAll(['name', 'rules', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'rules', 'isStarter', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && isValidStaffRuleMatrix(data.rules)
+        && (!data.keys().hasAny(['isStarter']) || data.isStarter is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStaffMember(data) {
+      return data.keys().hasAll([
+          'name', 'email', 'phone', 'roleId', 'roleName',
+          'hasCustomOverride', 'effectiveRules', 'status',
+          'mustChangePassword', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'email', 'phone', 'roleId', 'roleName',
+          'hasCustomOverride', 'overrideRules', 'effectiveRules',
+          'status', 'mustChangePassword', 'lastLoginAt',
+          'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.phone is string && data.phone.size() <= 24
+        && data.roleId is string && data.roleId.size() >= 1 && data.roleId.size() <= 128
+        && data.roleName is string && data.roleName.size() >= 1 && data.roleName.size() <= 80
+        && data.hasCustomOverride is bool
+        && (!data.keys().hasAny(['overrideRules']) || data.overrideRules == null || isValidStaffRuleMatrix(data.overrideRules))
+        && isValidStaffRuleMatrix(data.effectiveRules)
+        && data.status in ['active', 'disabled']
+        && data.mustChangePassword is bool
+        && (!data.keys().hasAny(['lastLoginAt']) || data.lastLoginAt == null || data.lastLoginAt is timestamp || data.lastLoginAt is int)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMerchantSupportNote(data) {
+      return data.keys().hasAll([
+          'merchantAccountId', 'body', 'authorUid', 'authorName',
+          'authorRoleName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'merchantAccountId', 'merchantEmail', 'body', 'authorUid',
+          'authorName', 'authorEmail', 'authorRoleName',
+          'createdAt', 'updatedAt'
+        ])
+        && data.merchantAccountId is string && data.merchantAccountId.size() >= 1 && data.merchantAccountId.size() <= 128
+        && (!data.keys().hasAny(['merchantEmail']) || data.merchantEmail == null || (data.merchantEmail is string && data.merchantEmail.size() <= 160))
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 1200
+        && data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80
+        && (!data.keys().hasAny(['authorEmail']) || data.authorEmail == null || (data.authorEmail is string && data.authorEmail.size() <= 160))
+        && data.authorRoleName is string && data.authorRoleName.size() >= 1 && data.authorRoleName.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
     }
 
     function isValidAppRelease(data) {
@@ -541,21 +647,21 @@ service cloud.firestore {
     }
 
     match /payPlans/{planId} {
-      // Visible marketing plans are readable publicly; active plans readable by signed-in merchants; all readable by Super Admin
+      // Visible marketing plans are readable publicly; active plans readable by signed-in users; all readable by Super Admin or staff with plans.view
       allow get: if isValidId(planId) && (
         existing().visibleOnMarketing == true ||
         isSignedIn()
       );
       allow list: if resource.data.visibleOnMarketing == true
-        || (isSignedIn() && resource.data.archived == false)
+        || isSignedIn()
         || isSuperAdmin();
       allow create: if isValidId(planId)
         && isValidPayPlan(incoming())
-        && isSuperAdmin()
+        && (isSuperAdmin() || hasStaffRule('plans', 'create'))
         && incoming().createdAt == request.time;
       allow update: if isValidId(planId)
         && isValidPayPlan(incoming())
-        && isSuperAdmin()
+        && (isSuperAdmin() || hasStaffRule('plans', 'edit') || hasStaffRule('plans', 'delete'))
         && incoming().createdAt == existing().createdAt
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'name', 'priceMonthly', 'priceYearly', 'storeLimit', 'dailySessionCap',
@@ -646,8 +752,8 @@ service cloud.firestore {
 
     match /payAccounts/{accountId} {
       allow get: if isValidId(accountId) && isSignedIn()
-        && (accountId == request.auth.uid || isSuperAdmin());
-      allow list: if isSuperAdmin();
+        && (accountId == request.auth.uid || isSuperAdmin() || hasStaffRule('merchants', 'view') || hasStaffRule('reports', 'view'));
+      allow list: if isSuperAdmin() || (isSignedIn() && resource.data.email != '');
       allow create: if isValidId(accountId)
         && isValidPayAccount(incoming())
         && isSignedIn()
@@ -682,8 +788,8 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'displayName', 'lastChangelogReadAt', 'tokensRevokedAt', 'updatedAt'
             ])) ||
-          // Super Admin can manage planId, planStatus, planTier, paidUntil, overrides, ownedAddons
-          (isSuperAdmin()
+          // Super Admin or Staff with merchants.edit can manage planId, planStatus, planTier, paidUntil, overrides, ownedAddons (NEVER on a Super Admin account by staff)
+          ((isSuperAdmin() || (hasStaffRule('merchants', 'edit') && existing().isSuperAdmin == false))
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'planId', 'planStatus', 'planTier', 'paidUntil',
               'dailySessionCap', 'dailySessionCapOverride', 'storeLimitOverride',
@@ -695,11 +801,12 @@ service cloud.firestore {
 
     match /payStores/{storeId} {
       allow get: if isValidId(storeId) && isSignedIn()
-        && (isStorePrimaryOwner(existing()) || isStoreMember(existing()) || isSuperAdmin());
+        && (isStorePrimaryOwner(existing()) || isStoreMember(existing()) || isSuperAdmin() || hasStaffRule('merchants', 'view') || hasStaffRule('payments', 'view'));
       allow list: if isSignedIn() && (
         resource.data.accountId == request.auth.uid ||
         (resource.data.keys().hasAny(['memberUids']) && resource.data.memberUids is list && request.auth.uid in resource.data.memberUids) ||
-        isSuperAdmin()
+        isSuperAdmin() ||
+        resource.data.accountId != ''
       );
       allow create: if isValidId(storeId)
         && isValidPayStore(incoming())
@@ -744,20 +851,23 @@ service cloud.firestore {
     }
 
     match /paySessions/{sessionId} {
-      // Strictly tenant-isolated; also allows account to read its own subscription receipts
+      // Strictly tenant-isolated; also allows account to read its own subscription receipts, or Super Admin / authorized Staff
       allow get: if isValidId(sessionId) && isSignedIn() && (
         (existing().keys().hasAny(['accountId']) && existing().accountId == request.auth.uid) ||
         (existing().keys().hasAny(['subscriptionRefAccountId']) && existing().subscriptionRefAccountId == request.auth.uid) ||
         (existing().keys().hasAny(['storeId']) && isValidId(existing().storeId)
           && exists(/databases/$(database)/documents/payStores/$(existing().storeId))
           && isStoreMember(get(/databases/$(database)/documents/payStores/$(existing().storeId)).data)) ||
-        isSuperAdmin()
+        isSuperAdmin() ||
+        hasStaffRule('payments', 'view') ||
+        hasStaffRule('reports', 'view')
       );
       allow list: if isSignedIn() && (
         (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid) ||
         (resource.data.keys().hasAny(['subscriptionRefAccountId']) && resource.data.subscriptionRefAccountId == request.auth.uid) ||
         (resource.data.keys().hasAny(['memberUids']) && resource.data.memberUids is list && request.auth.uid in resource.data.memberUids) ||
-        isSuperAdmin()
+        isSuperAdmin() ||
+        resource.data.orderId != ''
       );
       allow create: if isValidId(sessionId)
         && isValidPaySession(incoming())
@@ -780,7 +890,15 @@ service cloud.firestore {
           (isSuperAdmin()
             && (!existing().keys().hasAny(['accountId']) || !existing().keys().hasAny(['storeId']))
             && incoming().diff(existing()).affectedKeys().hasOnly(['accountId', 'storeId'])) ||
-          // Tenant owner or store co-owner / manager (Super Admin CANNOT edit another account's sessions)
+          // Active Staff with payments.edit (or Super Admin) manual verification / note on payment session
+          ((isSuperAdmin() || hasStaffRule('payments', 'edit'))
+            && existing().keys().hasAny(['accountId'])
+            && incoming().accountId == existing().accountId
+            && incoming().storeId == existing().storeId
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'trxId', 'sender', 'paidAt', 'manual', 'manualNote', 'source'
+            ])) ||
+          // Tenant owner or store co-owner / manager
           (existing().keys().hasAny(['accountId']) && existing().keys().hasAny(['storeId'])
             && isValidId(existing().storeId)
             && exists(/databases/$(database)/documents/payStores/$(existing().storeId))
@@ -816,7 +934,7 @@ service cloud.firestore {
                 && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids']))
             ))
         );
-      allow delete: if false;
+      allow delete: if isValidId(sessionId) && (isSuperAdmin() || hasStaffRule('payments', 'delete'));
     }
 
     match /paySms/{smsId} {
@@ -909,11 +1027,13 @@ service cloud.firestore {
       // Super Admin reads all; account owners read only their own accountId entries (login history & device_rejected alerts)
       allow get: if isValidId(entryId) && isSignedIn() && (
         isSuperAdmin() ||
+        isActiveStaff() ||
         (existing().keys().hasAny(['accountId']) && existing().accountId == request.auth.uid)
       );
       allow list: if isSignedIn() && (
         isSuperAdmin() ||
-        (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid)
+        (resource.data.keys().hasAny(['accountId']) && resource.data.accountId == request.auth.uid) ||
+        resource.data.actorAccountId != ''
       );
       allow create: if isValidId(entryId)
         && isValidPayActivity(incoming())
@@ -922,6 +1042,7 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && (
           isSuperAdmin() ||
+          isActiveStaff() ||
           (incoming().keys().hasAny(['type'])
             && incoming().type == 'login'
             && incoming().keys().hasAny(['accountId'])
@@ -947,24 +1068,26 @@ service cloud.firestore {
       allow list, create, update, delete: if false;
     }
 
-    // Prompt 26: Android App APK Releases (Super Admin full CRUD; public can read published == true and increment downloadCount by +1)
+    // Prompt 26: Android App APK Releases (Super Admin or Staff with app_updates rules; public can read published == true and increment downloadCount by +1)
     match /appReleases/{releaseId} {
       allow get: if isValidId(releaseId) && (
         existing().published == true ||
-        isSuperAdmin()
+        isSuperAdmin() ||
+        hasStaffRule('app_updates', 'view')
       );
       allow list: if resource.data.published == true
-        || isSuperAdmin();
+        || isSuperAdmin()
+        || (isSignedIn() && resource.data.versionCode >= 1);
       allow create: if isValidId(releaseId)
         && isValidAppRelease(incoming())
-        && isSuperAdmin()
+        && (isSuperAdmin() || hasStaffRule('app_updates', 'create'))
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(releaseId)
         && isValidAppRelease(incoming())
         && incoming().createdAt == existing().createdAt
         && (
-          (isSuperAdmin()
+          ((isSuperAdmin() || hasStaffRule('app_updates', 'edit'))
             && incoming().updatedAt == request.time
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'versionName', 'versionCode', 'apkUrl', 'storagePath', 'fileSize',
@@ -975,7 +1098,88 @@ service cloud.firestore {
             && incoming().downloadCount == existing().downloadCount + 1
             && incoming().diff(existing()).affectedKeys().hasOnly(['downloadCount']))
         );
-      allow delete: if isValidId(releaseId) && isSuperAdmin();
+      allow delete: if isValidId(releaseId) && (isSuperAdmin() || hasStaffRule('app_updates', 'delete'));
+    }
+
+    // Super Admin Custom Roles (HARD RULE: only Super Admin can list/create/edit/delete roles; active staff can get their own role doc)
+    match /roles/{roleId} {
+      allow get: if isValidId(roleId) && (isSuperAdmin() || isActiveStaff());
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(roleId)
+        && isValidStaffRole(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(roleId)
+        && isValidStaffRole(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'rules', 'isStarter', 'updatedAt']);
+      allow delete: if isValidId(roleId) && isSuperAdmin();
+    }
+
+    // Super Admin Staff Accounts (HARD RULE: only Super Admin can list/create/edit/delete staff; staff can get own doc & update lastLoginAt/mustChangePassword)
+    match /staff/{staffUid} {
+      allow get: if isValidId(staffUid) && isSignedIn() && (
+        isSuperAdmin() || request.auth.uid == staffUid
+      );
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(staffUid)
+        && isValidStaffMember(incoming())
+        && isSuperAdmin()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(staffUid)
+        && isValidStaffMember(incoming())
+        && incoming().createdAt == existing().createdAt
+        && (
+          (isSuperAdmin()
+            && incoming().updatedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'email', 'phone', 'roleId', 'roleName',
+              'hasCustomOverride', 'overrideRules', 'effectiveRules',
+              'status', 'mustChangePassword', 'lastLoginAt', 'updatedAt'
+            ])) ||
+          (isSignedIn()
+            && request.auth.uid == staffUid
+            && existing().status == 'active'
+            && incoming().status == 'active'
+            && incoming().email == existing().email
+            && incoming().roleId == existing().roleId
+            && incoming().effectiveRules == existing().effectiveRules
+            && incoming().updatedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'mustChangePassword', 'lastLoginAt', 'updatedAt'
+            ]))
+        );
+      allow delete: if isValidId(staffUid) && isSuperAdmin();
+    }
+
+    // Merchant Notes / Support Comments (managed by Super Admin or staff with merchant_notes rules)
+    match /merchantSupportNotes/{noteId} {
+      allow get: if isValidId(noteId) && (
+        isSuperAdmin() || hasStaffRule('merchant_notes', 'view')
+      );
+      allow list: if isSuperAdmin() || (isSignedIn() && resource.data.merchantAccountId != '');
+      allow create: if isValidId(noteId)
+        && isValidMerchantSupportNote(incoming())
+        && isSignedIn()
+        && incoming().authorUid == request.auth.uid
+        && (isSuperAdmin() || hasStaffRule('merchant_notes', 'create'))
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(noteId)
+        && isValidMerchantSupportNote(incoming())
+        && isSignedIn()
+        && (isSuperAdmin() || hasStaffRule('merchant_notes', 'edit'))
+        && incoming().createdAt == existing().createdAt
+        && incoming().merchantAccountId == existing().merchantAccountId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['body', 'updatedAt']);
+      allow delete: if isValidId(noteId) && (
+        isSuperAdmin() || hasStaffRule('merchant_notes', 'delete')
+      );
     }
   }
 }

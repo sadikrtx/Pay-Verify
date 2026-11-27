@@ -30,13 +30,18 @@ import type { AppReleaseDoc } from '../types/payment';
 
 export const SuperAdminAppUpdatesTab: React.FC = () => {
   const {
-    account,
+    canAdmin,
     appReleases,
     publishedAppRelease,
     adminSaveAppRelease,
     adminTogglePublishAppRelease,
     adminDeleteAppRelease,
   } = usePayVerify();
+
+  const canViewAppUpdates = canAdmin('app_updates', 'view');
+  const canCreateAppUpdates = canAdmin('app_updates', 'create');
+  const canEditAppUpdates = canAdmin('app_updates', 'edit');
+  const canDeleteAppUpdates = canAdmin('app_updates', 'delete');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -64,8 +69,7 @@ export const SuperAdminAppUpdatesTab: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Strictly enforce Super Admin only access
-  if (!account?.isSuperAdmin) {
+  if (!canViewAppUpdates) {
     return null;
   }
 
@@ -412,6 +416,7 @@ export const SuperAdminAppUpdatesTab: React.FC = () => {
       )}
 
       {/* (ক) উপরে: "নতুন ভার্সন যোগ করুন" ফর্ম */}
+      {(editingReleaseId ? canEditAppUpdates : canCreateAppUpdates) && (
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 sm:p-6 shadow-xs space-y-5">
         <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-4">
           <div className="flex items-center gap-2">
@@ -734,18 +739,21 @@ export const SuperAdminAppUpdatesTab: React.FC = () => {
           >
             {savingAction === 'draft' ? 'খসড়া সেভ হচ্ছে...' : 'খসড়া সেভ করুন'}
           </button>
-          <button
-            type="button"
-            data-testid="apk-publish-btn"
-            disabled={!canSave}
-            onClick={() => void handleSave(true)}
-            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-teal-700 text-white text-sm font-bold hover:bg-teal-800 disabled:opacity-50"
-          >
-            <Send className="w-4 h-4" />
-            {savingAction === 'publish' ? 'পাবলিশ হচ্ছে...' : 'পাবলিশ করুন'}
-          </button>
+          {canEditAppUpdates && (
+            <button
+              type="button"
+              data-testid="apk-publish-btn"
+              disabled={!canSave}
+              onClick={() => void handleSave(true)}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-teal-700 text-white text-sm font-bold hover:bg-teal-800 disabled:opacity-50"
+            >
+              <Send className="w-4 h-4" />
+              {savingAction === 'publish' ? 'পাবলিশ হচ্ছে...' : 'পাবলিশ করুন'}
+            </button>
+          )}
         </div>
       </div>
+      )}
 
       {/* (খ) নিচে: "সব ভার্সন" তালিকা */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 sm:p-6 shadow-xs space-y-4">
@@ -819,38 +827,44 @@ export const SuperAdminAppUpdatesTab: React.FC = () => {
 
                     {/* অ্যাকশন বাটন: পাবলিশ/আনপাবলিশ, এডিট, ডিলিট */}
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => void handleTogglePublish(rel)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors disabled:opacity-50 ${
-                          rel.published
-                            ? 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
-                            : 'border-teal-600 bg-teal-600 text-white hover:bg-teal-700'
-                        }`}
-                      >
-                        {rel.published ? 'আনপাবলিশ' : 'পাবলিশ'}
-                      </button>
+                      {canEditAppUpdates && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleTogglePublish(rel)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors disabled:opacity-50 ${
+                              rel.published
+                                ? 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                                : 'border-teal-600 bg-teal-600 text-white hover:bg-teal-700'
+                            }`}
+                          >
+                            {rel.published ? 'আনপাবলিশ' : 'পাবলিশ'}
+                          </button>
 
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => startEdit(rel)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        এডিট
-                      </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => startEdit(rel)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            এডিট
+                          </button>
+                        </>
+                      )}
 
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => setDeleteConfirmTarget(rel)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        ডিলিট
-                      </button>
+                      {canDeleteAppUpdates && (
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => setDeleteConfirmTarget(rel)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          ডিলিট
+                        </button>
+                      )}
                     </div>
                   </div>
 

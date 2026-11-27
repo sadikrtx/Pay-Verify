@@ -292,8 +292,11 @@ export interface PayActivityDoc {
   id: string;
   actorAccountId: string;
   actorEmail?: string;
+  actorName?: string | null;
+  actorRoleId?: string | null;
+  actorRoleName?: string | null;
   accountId?: string;
-  type?: string; // 'login' | 'device_rejected' | 'plan_change' | 'coupon_redeemed' | 'admin_action' | 'branding_change'
+  type?: string; // 'login' | 'device_rejected' | 'plan_change' | 'coupon_redeemed' | 'admin_action' | 'branding_change' | 'staff_action'
   action: string;
   targetType:
     | 'account'
@@ -305,7 +308,10 @@ export interface PayActivityDoc {
     | 'changelog'
     | 'device'
     | 'session'
-    | 'app_release';
+    | 'app_release'
+    | 'staff'
+    | 'role'
+    | 'merchant_note';
   targetId: string;
   detail: string;
   note: string;
@@ -313,6 +319,74 @@ export interface PayActivityDoc {
   deviceInfo?: string | null;
   deviceFingerprint?: string | null;
   createdAtMs: number;
+}
+
+export type StaffAreaKey =
+  | 'merchants'
+  | 'plans'
+  | 'payments'
+  | 'app_updates'
+  | 'reports'
+  | 'merchant_notes';
+
+export type StaffActionKey = 'view' | 'create' | 'edit' | 'delete' | 'export';
+
+export interface StaffAreaCrudRule {
+  view: boolean;
+  create: boolean;
+  edit: boolean;
+  delete: boolean;
+  export?: boolean;
+}
+
+export interface StaffRuleMatrix {
+  merchants: StaffAreaCrudRule;
+  plans: StaffAreaCrudRule;
+  payments: StaffAreaCrudRule;
+  app_updates: StaffAreaCrudRule;
+  reports: StaffAreaCrudRule & { export: boolean };
+  merchant_notes: StaffAreaCrudRule;
+}
+
+export interface StaffRoleDoc {
+  id: string;
+  name: string;
+  rules: StaffRuleMatrix;
+  isStarter?: boolean;
+  createdAtMs: number;
+  updatedAtMs: number | null;
+}
+
+export type StaffMemberStatus = 'active' | 'disabled';
+
+export interface StaffMemberDoc {
+  id: string; // Firebase Auth UID
+  name: string;
+  email: string;
+  phone: string;
+  roleId: string;
+  roleName: string;
+  hasCustomOverride: boolean;
+  overrideRules: StaffRuleMatrix | null;
+  effectiveRules: StaffRuleMatrix;
+  status: StaffMemberStatus;
+  mustChangePassword: boolean;
+  lastLoginAtMs: number | null;
+  createdAtMs: number;
+  updatedAtMs: number | null;
+}
+
+export interface MerchantSupportNoteDoc {
+  id: string;
+  merchantAccountId: string;
+  merchantEmail: string;
+  body: string;
+  authorUid: string;
+  authorName: string;
+  authorEmail: string;
+  authorRoleName: string;
+  createdAtMs: number;
+  updatedAtMs: number | null;
 }
 
 export interface AppReleaseDoc {

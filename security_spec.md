@@ -24,19 +24,24 @@
    - Super Admin cannot edit another account's `paySessions` or `paySms`.
    - Zero `get()`/`exists()` inside any `allow list` rule (Pillar 8).
 9. **Android App Releases Authority (`appReleases`)**:
-   - Only Super Admin may `create`, full-`update`, or `delete` `appReleases` documents, and only Super Admin may `get` or `list` unpublished (`published == false`) drafts.
+   - Super Admin or active staff with `app_updates` granular permissions (`create`, `edit`, `delete`) may write `appReleases` documents.
    - Public (including unauthenticated) visitors may `get` or `list` ONLY documents where `resource.data.published == true`, and may perform a strictly scoped `update` that ONLY increments `downloadCount` by `+1` on a published release (`affectedKeys().hasOnly(['downloadCount'])`).
+10. **Staff & Custom Roles RBAC (`roles`, `staff`, `merchantSupportNotes`)**:
+   - Only Super Admin may `create`, `update`, `delete`, or `list` `/roles/{roleId}` and `/staff/{staffUid}` documents. Staff accounts can NEVER list or mutate roles or other staff accounts, and can NEVER view or edit `/payPlatform/config`.
+   - Every `/staff/{staffUid}` document stores `status` (`'active' | 'disabled'`) and `effectiveRules` across the 6 areas (`merchants`, `plans`, `payments`, `app_updates`, `reports`, `merchant_notes`).
+   - A staff member whose `status != 'active'` or whose area rule is `false` is rejected at the Firestore rules level (`hasStaffRule(area, action)` checks `exists(/staff/$(uid)) && get(/staff/$(uid)).data.status == 'active' && get(/staff/$(uid)).data.effectiveRules[area][action] == true`).
 
 ## The "Dirty Dozen" Payloads (Must All Be Denied)
-1. **Unauthenticated read of `payAccounts`, `payStores`, `paySessions`, `paySms`, `payDevices`, `pairingTokens`, `payChangelog`, or unpublished `appReleases`**.
-2. **Non-super-admin creates or updates a `payPlans` or `appReleases` document** (or tries to delete any `payPlans` or `appReleases` doc).
+1. **Unauthenticated read of `payAccounts`, `payStores`, `paySessions`, `paySms`, `payDevices`, `pairingTokens`, `payChangelog`, `roles`, `staff`, `merchantSupportNotes`, or unpublished `appReleases`**.
+2. **Non-super-admin (or staff without `plans.edit`/`app_updates.edit`) creates or updates a `payPlans` or `appReleases` document**.
 3. **Non-super-admin lists `payCoupons`** to scrape secret discount codes, or modifies `usedCount`/`percentOff`.
 4. **Account owner self-upgrades `planId`, `planStatus`, `paidUntil`, `storeLimitOverride`, or `ownedAddons`** on `payAccounts/{uid}`.
 5. **Account owner attempts to reset `usedAt: null` or extend `expiresAt`** on an existing `pairingTokens/{tokenId}` document.
 6. **Account A creates a `pairingTokens` doc with `accountId: 'account_B'`** (cross-tenant device hijacking).
-7. **Non-super-admin writes a `payChangelog` entry**.
-8. **Non-super-admin forges a `payActivity` doc with `type: 'device_rejected'` or `targetType: 'plan'`** (only `type == 'login'` self-logging allowed).
-9. **Account A reads `payActivity` belonging to Account B**.
-10. **Super Admin with `email_verified == false`** attempts to write `payPlans`, `payCoupons`, `appReleases`, or `payPlatform/config`.
-11. **Shadow/ghost field injection** on `payPlans`, `payAddons`, `payCoupons`, `pairingTokens`, `payChangelog`, or `appReleases`.
-12. **Client read or write of `usedTrxIds/{trxId}`**, or Super Admin updating another merchant's `paySessions`/`paySms`.
+7. **Staff member (even active) attempts to create/edit/delete/list `/staff/{uid}` or `/roles/{roleId}`, or modify `/payPlatform/config` (Hard Rule violation)**.
+8. **View-only staff member (`payments.view == true, payments.edit == false`) attempts to update a `paySessions` document or `payAccounts` status**.
+9. **Deactivated staff member (`status == 'disabled'`) attempts any admin operation**.
+10. **Super Admin with `email_verified == false`** attempts to write `payPlans`, `payCoupons`, `appReleases`, `roles`, `staff`, or `payPlatform/config`.
+11. **Shadow/ghost field injection** on `payPlans`, `payAddons`, `payCoupons`, `pairingTokens`, `payChangelog`, `appReleases`, `roles`, `staff`, or `merchantSupportNotes`.
+12. **Client read or write of `usedTrxIds/{trxId}`**.
+

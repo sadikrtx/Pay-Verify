@@ -98,6 +98,11 @@ const DashboardShell: React.FC = () => {
     platformConfig,
     plans,
     account,
+    currentStaff,
+    isAdminPortalUser,
+    staffBlockedReason,
+    clearStaffBlockedReason,
+    canAdmin,
     planEvaluation,
     effectivePlan,
     hasUnreadChangelog,
@@ -178,12 +183,12 @@ const DashboardShell: React.FC = () => {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // When a Super Admin logs in via /admin, open the super_admin tab directly
+  // When a Super Admin or active Staff member logs in via /admin, open the super_admin tab directly
   useEffect(() => {
-    if (user && account?.isSuperAdmin && publicRoute === 'admin') {
+    if (user && isAdminPortalUser && publicRoute === 'admin') {
       setActiveTab('super_admin');
     }
-  }, [user, account?.isSuperAdmin, publicRoute]);
+  }, [user, isAdminPortalUser, publicRoute]);
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
@@ -226,12 +231,26 @@ const DashboardShell: React.FC = () => {
   if (!user) {
     if (publicRoute === 'admin') {
       return (
-        <BrandedLoginPage
-          portal="admin"
-          platformConfig={platformConfig}
-          onEmailSignIn={(email, password, portal) => signInWithEmail(email, password, portal)}
-          onGoogleSignIn={(portal) => signInWithGoogle(portal)}
-        />
+        <div>
+          {staffBlockedReason && (
+            <div className="bg-rose-600 text-white px-4 py-3 text-xs font-bold flex items-center justify-between gap-3">
+              <span>{staffBlockedReason}</span>
+              <button
+                type="button"
+                onClick={clearStaffBlockedReason}
+                className="px-2.5 py-1 rounded bg-white/15 hover:bg-white/25"
+              >
+                বন্ধ করুন
+              </button>
+            </div>
+          )}
+          <BrandedLoginPage
+            portal="admin"
+            platformConfig={platformConfig}
+            onEmailSignIn={(email, password, portal) => signInWithEmail(email, password, portal)}
+            onGoogleSignIn={(portal) => signInWithGoogle(portal)}
+          />
+        </div>
       );
     }
 
@@ -314,8 +333,8 @@ const DashboardShell: React.FC = () => {
     );
   }
 
-  // If a signed-in non-super-admin visits /admin directly, block access cleanly
-  if (publicRoute === 'admin' && account && !account.isSuperAdmin) {
+  // If a signed-in non-admin user visits /admin directly, block access cleanly
+  if (publicRoute === 'admin' && account && !isAdminPortalUser) {
     return (
       <div className="min-h-screen bg-[#FFF9EC] flex items-center justify-center p-6">
         <div className="w-full max-w-md bg-white rounded-3xl border border-[#E8DEC8] p-7 text-center space-y-4 shadow-sm">
@@ -340,6 +359,28 @@ const DashboardShell: React.FC = () => {
             </button>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // Dedicated Staff Admin Portal Shell: staff members see ONLY the /admin workspace
+  if (currentStaff && !account?.isSuperAdmin) {
+    return (
+      <div className="min-h-screen bg-[#F6F8FB] text-slate-900">
+        <header className="sticky top-0 z-30 h-16 bg-white border-b border-slate-200/80 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3">
+          <PayVerifyBrandMark
+            logoUrl={platformConfig.brandLogoUrl}
+            logoDataUrl={platformConfig.brandLogoDataUrl}
+            variant="dark"
+            size="sm"
+          />
+          <div className="flex items-center gap-2 text-xs text-slate-600">
+            <span className="font-mono hidden sm:inline">{currentStaff.email}</span>
+          </div>
+        </header>
+        <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+          <SuperAdminView />
+        </main>
       </div>
     );
   }
@@ -384,9 +425,11 @@ const DashboardShell: React.FC = () => {
     { id: 'account', label: 'অ্যাকাউন্ট', icon: UserCircle2 },
   ];
 
-  if (account?.isSuperAdmin) {
+  if (isAdminPortalUser) {
     navItems.push({ id: 'super_admin', label: 'সুপার অ্যাডমিন', icon: Shield });
-    navItems.push({ id: 'admin_app_updates', label: 'Android App আপডেট', icon: Smartphone });
+    if (canAdmin('app_updates', 'view')) {
+      navItems.push({ id: 'admin_app_updates', label: 'Android App আপডেট', icon: Smartphone });
+    }
   }
 
   const selectTab = (tab: DashboardTab) => {
@@ -799,8 +842,8 @@ const DashboardShell: React.FC = () => {
           {activeTab === 'account' && (
             <AccountView onOpenPlanComparison={() => setShowInAppPlans(true)} />
           )}
-          {activeTab === 'super_admin' && account?.isSuperAdmin && <SuperAdminView />}
-          {activeTab === 'admin_app_updates' && account?.isSuperAdmin && (
+          {activeTab === 'super_admin' && isAdminPortalUser && <SuperAdminView />}
+          {activeTab === 'admin_app_updates' && canAdmin('app_updates', 'view') && (
             <SuperAdminAppUpdatesTab />
           )}
         </div>

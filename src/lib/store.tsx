@@ -1,13 +1,17 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { deleteApp, initializeApp } from 'firebase/app';
 import {
   EmailAuthProvider,
   createUserWithEmailAndPassword,
+  getAuth,
   onAuthStateChanged,
   reauthenticateWithCredential,
   reauthenticateWithPopup,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updatePassword,
   updateProfile,
   type User,
 } from 'firebase/auth';
@@ -27,7 +31,15 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { deleteObject, ref as storageRef } from 'firebase/storage';
-import { auth, db, googleProvider, handleFirestoreError, OperationType, storage } from './firebase';
+import {
+  auth,
+  db,
+  firebaseProjectConfig,
+  googleProvider,
+  handleFirestoreError,
+  OperationType,
+  storage,
+} from './firebase';
 import {
   generateDocId,
   generatePairingTokenCode,
@@ -88,15 +100,24 @@ import {
   mapCoupon,
   mapDevice,
   mapLegacySettings,
+  mapMerchantSupportNote,
   mapPairingToken,
   mapPlan,
   mapPlatformConfig,
   mapSession,
   mapSms,
+  mapStaffMember,
+  mapStaffRole,
   mapStore,
   mapSubscriptionPurchase,
 } from './storeMappers';
 import { pickLatestPublishedRelease, validateVersionCode } from './appReleases';
+import {
+  buildStarterStaffRoles,
+  checkAdminPermission,
+  normalizeStaffRuleMatrix,
+  resolveStaffEffectiveRules,
+} from './staffRoles';
 import { normalizeLandingConfig } from './landingConfig';
 import {
   DEFAULT_STORE_ACCENT,
@@ -109,6 +130,7 @@ import {
   type AppReleaseDoc,
   type AppReleaseDraftInput,
   type LandingPageConfig,
+  type MerchantSupportNoteDoc,
   type PairingTokenDoc,
   type PayAccountDoc,
   type PayActivityDoc,
@@ -126,6 +148,12 @@ import {
   type PayStoreDoc,
   type PaySubscriptionPurchaseDoc,
   type PlanStatus,
+  type StaffActionKey,
+  type StaffAreaKey,
+  type StaffMemberDoc,
+  type StaffMemberStatus,
+  type StaffRoleDoc,
+  type StaffRuleMatrix,
   type StoreMemberRole,
   type StoreType,
   type TestVerificationType,
@@ -148,12 +176,13 @@ import {
 
 const SELECTED_STORE_KEY = 'payverify_bd_selected_store_id';
 
-export function getAutomatedTestRole(): 'superadmin' | 'merchant' | 'grace' | null {
+export function getAutomatedTestRole(): 'superadmin' | 'merchant' | 'grace' | 'staff' | null {
   if (typeof window === 'undefined') return null;
   const val = new URLSearchParams(window.location.search).get('autostart');
   if (val === '1' || val === 'superadmin') return 'superadmin';
   if (val === 'merchant') return 'merchant';
   if (val === 'grace') return 'grace';
+  if (val === 'staff') return 'staff';
   return null;
 }
 
@@ -204,6 +233,11 @@ interface PayVerifyContextValue {
   dataLoading: boolean;
   platformConfig: PayPlatformConfig;
   account: PayAccountDoc | null;
+  currentStaff: StaffMemberDoc | null;
+  isAdminPortalUser: boolean;
+  staffBlockedReason: string | null;
+  clearStaffBlockedReason: () => void;
+  canAdmin: (area: StaffAreaKey, action: StaffActionKey) => boolean;
   planEvaluation: EvaluatedAccountPlan | null;
   effectivePlan: EffectiveAccountPlan | null;
   plans: PayPlanDoc[];
@@ -230,14 +264,17 @@ interface PayVerifyContextValue {
   deviceRejectedAlerts: PayActivityDoc[];
   newDeviceLoginAlert: boolean;
   dismissNewDeviceLoginAlert: () => void;
-  // Super Admin datasets (populated ONLY when account.isSuperAdmin === true)
+  // Super Admin & Permitted Staff datasets
   allAccounts: PayAccountDoc[];
   allStores: PayStoreDoc[];
   allSessions: PaySessionDoc[];
   allDevices: PayDeviceDoc[];
   activityLog: PayActivityDoc[];
   subscriptionPurchases: PaySubscriptionPurchaseDoc[];
-  // Android App Releases (publishedAppRelease available to everyone; appReleases list for Super Admin)
+  staffRoles: StaffRoleDoc[];
+  staffMembers: StaffMemberDoc[];
+  merchantSupportNotes: MerchantSupportNoteDoc[];
+  // Android App Releases (publishedAppRelease available to everyone; appReleases list for Super Admin / permitted staff)
   appReleases: AppReleaseDoc[];
   publishedAppRelease: AppReleaseDoc | null;
   appReleasesLoaded: boolean;
@@ -261,6 +298,10 @@ interface PayVerifyContextValue {
   signOutUser: () => Promise<void>;
   signOutAllSessions: () => Promise<{ localSignedOut: boolean; workerRevocationPending: boolean }>;
   markChangelogRead: () => Promise<void>;
+  completeStaffFirstLoginPasswordChange: (
+    newPassword: string,
+    currentTempPassword?: string
+  ) => Promise<void>;
   // Stores
   createStore: (name: string) => Promise<{ store: PayStoreDoc; rawStoreKey: string }>;
   saveStorePaymentMethods: (
@@ -340,7 +381,7 @@ interface PayVerifyContextValue {
     method: WalletMethod;
     couponCode?: string;
   }) => Promise<{ sessionId: string; paymentPath: string }>;
-  // Super Admin actions (all log payActivity)
+  // Super Admin & Granular Staff actions (all log payActivity with actorName + actorRoleName)
   adminSaveWorkerBaseUrl: (workerBaseUrl: string, note?: string) => Promise<void>;
   adminSavePlatformSettings: (
     input: {
@@ -368,6 +409,7 @@ interface PayVerifyContextValue {
     detail: string,
     note: string
   ) => Promise<void>;
+  adminDeleteMerchantAccount: (targetAccountId: string, note: string) => Promise<void>;
   adminConvertStoreType: (storeId: string, newType: StoreType, note: string) => Promise<void>;
   adminReassignStore: (
     storeId: string,
@@ -381,6 +423,7 @@ interface PayVerifyContextValue {
     note?: string
   ) => Promise<PayPlanDoc>;
   adminArchivePlan: (planId: string, archived: boolean, note?: string) => Promise<void>;
+  adminDeletePlan: (planId: string, note?: string) => Promise<void>;
   adminSaveAddon: (
     draft: AddonDraftInput,
     existingAddonId?: string,
@@ -403,6 +446,50 @@ interface PayVerifyContextValue {
   adminTogglePublishAppRelease: (releaseId: string, publish: boolean) => Promise<void>;
   adminDeleteAppRelease: (releaseId: string) => Promise<void>;
   recordAppReleaseDownload: (releaseId: string) => Promise<void>;
+  adminVerifyOrNotePaymentSession: (
+    sessionId: string,
+    updates: {
+      status?: 'paid' | 'failed' | 'cancelled' | 'waiting';
+      trxId?: string | null;
+      manualNote: string;
+    }
+  ) => Promise<void>;
+  adminDeletePaymentSession: (sessionId: string, note?: string) => Promise<void>;
+  saveMerchantSupportNote: (
+    input: { merchantAccountId: string; merchantEmail: string; body: string },
+    existingNoteId?: string
+  ) => Promise<MerchantSupportNoteDoc>;
+  deleteMerchantSupportNote: (noteId: string) => Promise<void>;
+  logAdminReportExport: (reportLabelBn: string) => Promise<void>;
+  // Super Admin ONLY: Staff & Custom Roles management (Parts A–E)
+  adminSaveStaffRole: (
+    input: { name: string; rules: StaffRuleMatrix; isStarter?: boolean },
+    existingRoleId?: string
+  ) => Promise<StaffRoleDoc>;
+  adminDuplicateStaffRole: (roleId: string) => Promise<StaffRoleDoc>;
+  adminDeleteStaffRole: (roleId: string) => Promise<void>;
+  adminCreateStaffAccount: (input: {
+    name: string;
+    email: string;
+    phone: string;
+    tempPassword: string;
+    roleId: string;
+    hasCustomOverride: boolean;
+    overrideRules: StaffRuleMatrix | null;
+  }) => Promise<StaffMemberDoc>;
+  adminUpdateStaffMember: (
+    staffUid: string,
+    input: {
+      name?: string;
+      phone?: string;
+      roleId: string;
+      hasCustomOverride: boolean;
+      overrideRules: StaffRuleMatrix | null;
+    }
+  ) => Promise<void>;
+  adminToggleStaffStatus: (staffUid: string, nextStatus: StaffMemberStatus) => Promise<void>;
+  adminSendStaffPasswordReset: (staffUid: string) => Promise<void>;
+  adminRemoveStaffMember: (staffUid: string) => Promise<void>;
 }
 
 const PayVerifyContext = createContext<PayVerifyContextValue | null>(null);
@@ -422,8 +509,59 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [coupons, setCoupons] = useState<PayCouponDoc[]>([]);
   const [changelog, setChangelog] = useState<PayChangelogDoc[]>([]);
 
+  const [staffRoles, setStaffRoles] = useState<StaffRoleDoc[]>(() =>
+    isAutoTest ? buildStarterStaffRoles() : []
+  );
+  const [staffMembers, setStaffMembers] = useState<StaffMemberDoc[]>(() => {
+    if (!isAutoTest || autoRole !== 'staff') return [];
+    const starters = buildStarterStaffRoles();
+    const supportRole = starters[1] || starters[0];
+    return [
+      {
+        id: 'staff_test_uid',
+        name: 'রাফি আহমেদ',
+        email: 'staff@example.com',
+        phone: '01711000000',
+        roleId: supportRole.id,
+        roleName: supportRole.name,
+        hasCustomOverride: false,
+        overrideRules: null,
+        effectiveRules: supportRole.rules,
+        status: 'active',
+        mustChangePassword: false,
+        lastLoginAtMs: Date.now(),
+        createdAtMs: Date.now() - 86_400_000,
+        updatedAtMs: Date.now(),
+      },
+    ];
+  });
+  const [currentStaff, setCurrentStaff] = useState<StaffMemberDoc | null>(() => {
+    if (!isAutoTest || autoRole !== 'staff') return null;
+    const starters = buildStarterStaffRoles();
+    const supportRole = starters[1] || starters[0];
+    return {
+      id: 'staff_test_uid',
+      name: 'রাফি আহমেদ',
+      email: 'staff@example.com',
+      phone: '01711000000',
+      roleId: supportRole.id,
+      roleName: supportRole.name,
+      hasCustomOverride: false,
+      overrideRules: null,
+      effectiveRules: supportRole.rules,
+      status: 'active',
+      mustChangePassword: false,
+      lastLoginAtMs: Date.now(),
+      createdAtMs: Date.now() - 86_400_000,
+      updatedAtMs: Date.now(),
+    };
+  });
+  const [staffBlockedReason, setStaffBlockedReason] = useState<string | null>(null);
+  const [merchantSupportNotes, setMerchantSupportNotes] = useState<MerchantSupportNoteDoc[]>([]);
+
   const [account, setAccount] = useState<PayAccountDoc | null>(() => {
     if (!isAutoTest) return null;
+    if (autoRole === 'staff') return null;
     const now = Date.now();
     if (autoRole === 'merchant') {
       return {
@@ -562,6 +700,8 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const funnelSignupInProgressRef = useRef(false);
   const adminPortalCheckingRef = useRef(false);
 
+  const clearStaffBlockedReason = useCallback(() => setStaffBlockedReason(null), []);
+
   const setSelectedStoreId = useCallback((storeId: string) => {
     setSelectedStoreIdState(storeId);
     try {
@@ -649,6 +789,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         loginLoggedUidRef.current = null;
         setDataLoading(false);
         setAccount(null);
+        setCurrentStaff(null);
         setOwnedStores([]);
         setSharedStores([]);
         setOwnedSessions([]);
@@ -665,6 +806,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setAllDevices([]);
         setActivityLog([]);
         setSubscriptionPurchases([]);
+        setStaffRoles([]);
+        setStaffMembers([]);
+        setMerchantSupportNotes([]);
         setAppReleases([]);
         setAddons([]);
         setCoupons([]);
@@ -674,7 +818,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return unsub;
   }, [isAutoTest]);
 
-  // Bootstrap account, run idempotent A1 + A2 migrations, record login event, and attach listeners
+  // Bootstrap account or staff profile, run idempotent migrations, record login event, and attach listeners
   useEffect(() => {
     if (isAutoTest || !authReady || !fbUser) return;
     let cancelled = false;
@@ -687,6 +831,107 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const displayName = (fbUser.displayName || emailLower.split('@')[0] || 'মার্চেন্ট').slice(0, 80);
       const isBootstrappedSuperAdmin =
         isSuperAdminEmail(emailLower) && fbUser.emailVerified === true;
+
+      // 0. Check if this user is a Staff account (/staff/{uid}) before creating any merchant account
+      if (!isBootstrappedSuperAdmin) {
+        try {
+          const staffRef = doc(db, 'staff', uid);
+          const staffSnap = await getDoc(staffRef);
+          if (cancelled) return;
+          if (staffSnap.exists()) {
+            const staffDoc = mapStaffMember(staffSnap.id, staffSnap.data());
+            if (staffDoc.status === 'disabled') {
+              setStaffBlockedReason(
+                'আপনার স্টাফ অ্যাকাউন্টটি বর্তমানে বন্ধ আছে। সুপার অ্যাডমিনের সাথে যোগাযোগ করুন।'
+              );
+              setCurrentStaff(null);
+              setDataLoading(false);
+              await signOut(auth).catch(() => {});
+              return;
+            }
+
+            setStaffBlockedReason(null);
+            setAccount(null);
+            setCurrentStaff(staffDoc);
+            setDataLoading(false);
+
+            // Update lastLoginAt and write staff login audit log once per session
+            if (loginLoggedUidRef.current !== uid) {
+              loginLoggedUidRef.current = uid;
+              try {
+                await updateDoc(staffRef, {
+                  lastLoginAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } catch {
+                // Non-fatal
+              }
+              try {
+                const dev = getBrowserDeviceInfo();
+                const loginActId = generateDocId('login');
+                await setDoc(doc(db, 'payActivity', loginActId), {
+                  actorAccountId: uid,
+                  actorEmail: emailLower,
+                  actorName: staffDoc.name,
+                  actorRoleId: staffDoc.roleId,
+                  actorRoleName: staffDoc.roleName,
+                  accountId: uid,
+                  type: 'login',
+                  action: 'staff_login',
+                  targetType: 'staff',
+                  targetId: uid,
+                  detail: `স্টাফ লগইন: ${staffDoc.name} (${staffDoc.roleName})`,
+                  note: dev.label,
+                  createdAt: serverTimestamp(),
+                });
+              } catch {
+                // Non-fatal login audit
+              }
+            }
+
+            const uPlatform = onSnapshot(
+              doc(db, 'payPlatform', 'config'),
+              (snap) => {
+                if (snap.exists()) {
+                  const cfg = mapPlatformConfig(snap.data());
+                  setPlatformConfig(cfg);
+                }
+              },
+              () => {}
+            );
+
+            const uStaffSelf = onSnapshot(
+              staffRef,
+              (snap) => {
+                if (!snap.exists()) {
+                  setCurrentStaff(null);
+                  setStaffBlockedReason('আপনার স্টাফ অ্যাকাউন্টের অ্যাক্সেস বাতিল করা হয়েছে।');
+                  void signOut(auth).catch(() => {});
+                  return;
+                }
+                const updatedStaff = mapStaffMember(snap.id, snap.data());
+                if (updatedStaff.status === 'disabled') {
+                  setCurrentStaff(null);
+                  setStaffBlockedReason(
+                    'আপনার স্টাফ অ্যাকাউন্টটি বন্ধ করা হয়েছে। সুপার অ্যাডমিনের সাথে যোগাযোগ করুন।'
+                  );
+                  void signOut(auth).catch(() => {});
+                  return;
+                }
+                setCurrentStaff(updatedStaff);
+              },
+              () => {}
+            );
+
+            unsubs = [uPlatform, uStaffSelf];
+            return;
+          }
+        } catch {
+          // Proceed to regular account flow if /staff/{uid} read fails
+        }
+      }
+
+      setCurrentStaff(null);
 
       // 1. Ensure payAccounts/{uid} exists
       const accountRef = doc(db, 'payAccounts', uid);
@@ -752,6 +997,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           await setDoc(doc(db, 'payActivity', loginActId), {
             actorAccountId: uid,
             actorEmail: emailLower,
+            actorName: displayName,
+            actorRoleId: isSuperAdminFlag ? 'super_admin' : null,
+            actorRoleName: isSuperAdminFlag ? 'সুপার অ্যাডমিন' : null,
             accountId: uid,
             type: 'login',
             action: 'login',
@@ -769,7 +1017,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       }
 
-      // 4. Super Admin idempotent A1 + A2 migrations
+      // 4. Super Admin idempotent A1 + A2 + Starter Roles migrations
       if (isSuperAdminFlag) {
         try {
           // 4a. A1 legacy paySettings/main migration
@@ -883,11 +1131,28 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           }
 
           // 4b. A2 Idempotent Plan Seeding (3 plans ONCE if payPlans empty) + Account planId Migration
-          const [plansSnap, accountsSnap] = await Promise.all([
+          const [plansSnap, accountsSnap, rolesSnap] = await Promise.all([
             getDocs(collection(db, 'payPlans')),
             getDocs(collection(db, 'payAccounts')),
+            getDocs(collection(db, 'roles')),
           ]);
           if (cancelled) return;
+
+          // Seed the two built-in starter roles ("মডারেটর" and "সাপোর্ট স্টাফ") if /roles is empty
+          if (rolesSnap.empty) {
+            const starterRoles = buildStarterStaffRoles();
+            const roleBatch = writeBatch(db);
+            for (const sr of starterRoles) {
+              roleBatch.set(doc(db, 'roles', sr.id), {
+                name: sr.name,
+                rules: sr.rules,
+                isStarter: true,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            await roleBatch.commit();
+          }
 
           const existingPlans = plansSnap.docs.map((d) => mapPlan(d.id, d.data()));
           const existingAccounts = accountsSnap.docs.map((d) => mapAccount(d.id, d.data()));
@@ -1244,6 +1509,42 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           (err) => handleFirestoreError(err, OperationType.LIST, 'appReleases(admin)')
         );
 
+        const uStaffRoles = onSnapshot(
+          collection(db, 'roles'),
+          (snap) => {
+            setStaffRoles(
+              snap.docs
+                .map((d) => mapStaffRole(d.id, d.data()))
+                .sort((a, b) => a.createdAtMs - b.createdAtMs)
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'roles(admin)')
+        );
+
+        const uStaffMembers = onSnapshot(
+          collection(db, 'staff'),
+          (snap) => {
+            setStaffMembers(
+              snap.docs
+                .map((d) => mapStaffMember(d.id, d.data()))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs)
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'staff(admin)')
+        );
+
+        const uMerchantNotes = onSnapshot(
+          collection(db, 'merchantSupportNotes'),
+          (snap) => {
+            setMerchantSupportNotes(
+              snap.docs
+                .map((d) => mapMerchantSupportNote(d.id, d.data()))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs)
+            );
+          },
+          () => {}
+        );
+
         unsubs.push(
           uAllAccounts,
           uAllStores,
@@ -1252,7 +1553,10 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           uActivity,
           uCoupons,
           uPurchases,
-          uAppReleases
+          uAppReleases,
+          uStaffRoles,
+          uStaffMembers,
+          uMerchantNotes
         );
       }
     };
@@ -1264,6 +1568,136 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       for (const u of unsubs) u();
     };
   }, [isAutoTest, authReady, fbUser]);
+
+  // Dynamic permission-scoped listeners for active Staff Member (re-subscribes immediately if Super Admin updates their rules)
+  useEffect(() => {
+    if (isAutoTest || !authReady || !fbUser || !currentStaff || currentStaff.status !== 'active') {
+      return;
+    }
+    if (account?.isSuperAdmin) return;
+
+    const rules = currentStaff.effectiveRules;
+    const unsubs: Array<() => void> = [];
+
+    if (rules.merchants.view || rules.reports.view) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'payAccounts'),
+          (snap) => {
+            setAllAccounts(
+              snap.docs
+                .map((d) => mapAccount(d.id, d.data()))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs)
+            );
+          },
+          () => {}
+        ),
+        onSnapshot(
+          collection(db, 'payStores'),
+          (snap) => {
+            setAllStores(
+              snap.docs
+                .map((d) => mapStore(d.id, d.data()))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs)
+            );
+          },
+          () => {}
+        )
+      );
+    } else {
+      setAllAccounts([]);
+      setAllStores([]);
+    }
+
+    if (rules.payments.view || rules.reports.view) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'paySessions'),
+          (snap) => {
+            setAllSessions(
+              snap.docs
+                .map((d) => mapSession(d.id, d.data()))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs)
+            );
+          },
+          () => {}
+        )
+      );
+    } else {
+      setAllSessions([]);
+    }
+
+    if (rules.plans.view) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'payPlans'),
+          (snap) => {
+            setPlans(
+              snap.docs
+                .map((d) => mapPlan(d.id, d.data()))
+                .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAtMs - b.createdAtMs)
+            );
+          },
+          () => {}
+        )
+      );
+    }
+
+    if (rules.app_updates.view) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'appReleases'),
+          (snap) => {
+            setAppReleases(
+              snap.docs
+                .map((d) => mapAppRelease(d.id, d.data()))
+                .sort((a, b) => b.versionCode - a.versionCode || b.createdAtMs - a.createdAtMs)
+            );
+            setAppReleasesLoaded(true);
+          },
+          () => {}
+        )
+      );
+    } else {
+      setAppReleases([]);
+    }
+
+    if (rules.merchant_notes.view) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'merchantSupportNotes'),
+          (snap) => {
+            setMerchantSupportNotes(
+              snap.docs
+                .map((d) => mapMerchantSupportNote(d.id, d.data()))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs)
+            );
+          },
+          () => {}
+        )
+      );
+    } else {
+      setMerchantSupportNotes([]);
+    }
+
+    unsubs.push(
+      onSnapshot(
+        collection(db, 'payActivity'),
+        (snap) => {
+          setActivityLog(
+            snap.docs
+              .map((d) => mapActivity(d.id, d.data()))
+              .sort((a, b) => b.createdAtMs - a.createdAtMs)
+          );
+        },
+        () => {}
+      )
+    );
+
+    return () => {
+      for (const u of unsubs) u();
+    };
+  }, [isAutoTest, authReady, fbUser, currentStaff, account?.isSuperAdmin]);
 
   // If an account is on an archived plan (hidden from active plans list), fetch it directly so limits stay live
   useEffect(() => {
@@ -1282,16 +1716,27 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   }, [isAutoTest, fbUser, account, plans]);
 
+  const canAdmin = useCallback(
+    (area: StaffAreaKey, action: StaffActionKey): boolean =>
+      checkAdminPermission(Boolean(account?.isSuperAdmin), currentStaff, area, action),
+    [account?.isSuperAdmin, currentStaff]
+  );
+
+  const isAdminPortalUser = useMemo(
+    () => Boolean(account?.isSuperAdmin || (currentStaff && currentStaff.status === 'active')),
+    [account?.isSuperAdmin, currentStaff]
+  );
+
   // Derived data
   const publishedAppRelease = useMemo(() => {
-    if (account?.isSuperAdmin || isAutoTest) {
+    if (account?.isSuperAdmin || canAdmin('app_updates', 'view') || isAutoTest) {
       return (
         pickLatestPublishedRelease(appReleases) ??
         pickLatestPublishedRelease(publishedReleasesSnapshot)
       );
     }
     return pickLatestPublishedRelease(publishedReleasesSnapshot);
-  }, [account?.isSuperAdmin, isAutoTest, appReleases, publishedReleasesSnapshot]);
+  }, [account?.isSuperAdmin, canAdmin, isAutoTest, appReleases, publishedReleasesSnapshot]);
 
   const visibleMarketingPlans = useMemo(
     () =>
@@ -1365,16 +1810,25 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [accountSessions, selectedStore]);
 
   const activeUser = useMemo(() => {
-    if (isAutoTest && account) {
-      return { uid: account.id, email: account.email, displayName: account.displayName };
+    if (isAutoTest) {
+      if (currentStaff) {
+        return {
+          uid: currentStaff.id,
+          email: currentStaff.email,
+          displayName: currentStaff.name,
+        };
+      }
+      if (account) {
+        return { uid: account.id, email: account.email, displayName: account.displayName };
+      }
     }
     if (!fbUser) return null;
     return {
       uid: fbUser.uid,
       email: fbUser.email || '',
-      displayName: fbUser.displayName || fbUser.email || '',
+      displayName: currentStaff?.name || fbUser.displayName || fbUser.email || '',
     };
-  }, [isAutoTest, account, fbUser]);
+  }, [isAutoTest, currentStaff, account, fbUser]);
 
   const authMetadata = useMemo<AuthSecurityMetadata>(() => {
     if (isAutoTest) {
@@ -1440,6 +1894,26 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           authorized = true;
         }
       } catch {
+        authorized = false;
+      }
+    }
+    if (!authorized) {
+      try {
+        const staffSnap = await getDoc(doc(db, 'staff', signedInUser.uid));
+        if (staffSnap.exists()) {
+          const staffData = mapStaffMember(staffSnap.id, staffSnap.data());
+          if (staffData.status === 'disabled') {
+            await signOut(auth).catch(() => {});
+            throw new Error(
+              'আপনার স্টাফ অ্যাকাউন্টটি বর্তমানে বন্ধ আছে। সুপার অ্যাডমিনের সাথে যোগাযোগ করুন।'
+            );
+          }
+          authorized = true;
+        }
+      } catch (staffErr) {
+        if (staffErr instanceof Error && staffErr.message.includes('বন্ধ আছে')) {
+          throw staffErr;
+        }
         authorized = false;
       }
     }
@@ -3125,6 +3599,28 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [adminSavePlatformSettings]
   );
 
+  const getAdminActorMeta = useCallback(() => {
+    if (account?.isSuperAdmin) {
+      return {
+        actorAccountId: account.id,
+        actorEmail: account.email,
+        actorName: account.displayName || 'সুপার অ্যাডমিন',
+        actorRoleId: 'super_admin',
+        actorRoleName: 'সুপার অ্যাডমিন',
+      };
+    }
+    if (currentStaff && currentStaff.status === 'active') {
+      return {
+        actorAccountId: currentStaff.id,
+        actorEmail: currentStaff.email,
+        actorName: currentStaff.name,
+        actorRoleId: currentStaff.roleId,
+        actorRoleName: currentStaff.roleName,
+      };
+    }
+    throw new Error('অ্যাডমিন পোর্টালে এই কাজের অনুমতি আপনার নেই।');
+  }, [account, currentStaff]);
+
   const adminUpdateAccount = useCallback(
     async (
       targetAccountId: string,
@@ -3139,7 +3635,14 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       detail: string,
       note: string
     ) => {
-      if (!account?.isSuperAdmin) throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      if (!canAdmin('merchants', 'edit')) {
+        throw new Error('মার্চেন্ট অ্যাকাউন্ট সম্পাদনার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
+      const targetAcc = allAccounts.find((a) => a.id === targetAccountId);
+      if (targetAcc?.isSuperAdmin) {
+        throw new Error('সুপার অ্যাডমিনের অ্যাকাউন্ট পরিবর্তন করা যাবে না।');
+      }
       const cleanNote = note.trim().slice(0, 300);
       if (!cleanNote) throw new Error('অ্যাক্টিভিটি নোট লেখা বাধ্যতামূলক।');
 
@@ -3193,8 +3696,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             accountId: targetAccountId,
             type: 'admin_action',
             action: 'update_account',
@@ -3216,8 +3718,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           updatedAt: serverTimestamp(),
         });
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           accountId: targetAccountId,
           type: 'admin_action',
           action: 'update_account',
@@ -3232,12 +3733,72 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         handleFirestoreError(err, OperationType.UPDATE, `payAccounts/${targetAccountId}`);
       }
     },
-    [account, isAutoTest]
+    [canAdmin, getAdminActorMeta, allAccounts, isAutoTest]
+  );
+
+  const adminDeleteMerchantAccount = useCallback(
+    async (targetAccountId: string, note: string) => {
+      if (!canAdmin('merchants', 'delete')) {
+        throw new Error('মার্চেন্ট অ্যাকাউন্ট মোছার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
+      const targetAcc = allAccounts.find((a) => a.id === targetAccountId);
+      if (!targetAcc) throw new Error('অ্যাকাউন্টটি খুঁজে পাওয়া যায়নি।');
+      if (targetAcc.isSuperAdmin) {
+        throw new Error('সুপার অ্যাডমিনের অ্যাকাউন্ট মোছা যাবে না।');
+      }
+      const cleanNote = note.trim().slice(0, 300) || `মার্চেন্ট মুছে ফেলা হয়েছে: ${targetAcc.email}`;
+      const actId = generateDocId('act');
+      const detail = `মার্চেন্ট অ্যাকাউন্ট মুছে ফেলা হয়েছে: ${targetAcc.email}`;
+
+      if (isAutoTest) {
+        setAllAccounts((prev) => prev.filter((a) => a.id !== targetAccountId));
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            accountId: targetAccountId,
+            type: 'admin_action',
+            action: 'delete_account',
+            targetType: 'account',
+            targetId: targetAccountId,
+            detail,
+            note: cleanNote,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'payAccounts', targetAccountId));
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          accountId: targetAccountId,
+          type: 'admin_action',
+          action: 'delete_account',
+          targetType: 'account',
+          targetId: targetAccountId,
+          detail: detail.slice(0, 400),
+          note: cleanNote,
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `payAccounts/${targetAccountId}`);
+      }
+    },
+    [canAdmin, getAdminActorMeta, allAccounts, isAutoTest]
   );
 
   const adminConvertStoreType = useCallback(
     async (storeId: string, newType: StoreType, note: string) => {
-      if (!account?.isSuperAdmin) throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      if (!canAdmin('merchants', 'edit')) {
+        throw new Error('স্টোরের ধরন পরিবর্তনের অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
       const cleanNote = note.trim().slice(0, 300);
       if (!cleanNote) throw new Error('টাইপ পরিবর্তনের জন্য নোট লেখা বাধ্যতামূলক।');
 
@@ -3253,8 +3814,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             type: 'admin_action',
             action: 'convert_store_type',
             targetType: 'store',
@@ -3275,8 +3835,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           updatedAt: serverTimestamp(),
         });
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'admin_action',
           action: 'convert_store_type',
           targetType: 'store',
@@ -3290,12 +3849,15 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         handleFirestoreError(err, OperationType.UPDATE, `payStores/${storeId}`);
       }
     },
-    [account, allStores, isAutoTest]
+    [canAdmin, getAdminActorMeta, allStores, isAutoTest]
   );
 
   const adminReassignStore = useCallback(
     async (storeId: string, newAccountId: string, newOwnerEmail: string, note: string) => {
-      if (!account?.isSuperAdmin) throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      if (!canAdmin('merchants', 'edit')) {
+        throw new Error('স্টোরের মালিক পরিবর্তনের অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
       const cleanNote = note.trim().slice(0, 300);
       if (!cleanNote) throw new Error('মালিক পরিবর্তনের জন্য নোট লেখা বাধ্যতামূলক।');
       if (!newAccountId) throw new Error('নতুন মালিক নির্বাচন করুন।');
@@ -3310,14 +3872,13 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setAllStores((prev) =>
           prev.map((s) => (s.id === storeId ? { ...s, accountId: newAccountId } : s))
         );
-        if (newAccountId !== account.id) {
+        if (account && newAccountId !== account.id) {
           setOwnedStores((prev) => prev.filter((s) => s.id !== storeId));
         }
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             type: 'admin_action',
             action: 'reassign_store',
             targetType: 'store',
@@ -3338,8 +3899,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           updatedAt: serverTimestamp(),
         });
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'admin_action',
           action: 'reassign_store',
           targetType: 'store',
@@ -3353,18 +3913,25 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         handleFirestoreError(err, OperationType.UPDATE, `payStores/${storeId}`);
       }
     },
-    [account, allStores, allAccounts, isAutoTest]
+    [canAdmin, getAdminActorMeta, account, allStores, allAccounts, isAutoTest]
   );
 
-  // ─── Super Admin Plan / Add-on / Coupon / Changelog CRUD ──────────────
+  // ─── Super Admin & Staff Plan / Add-on / Coupon / Changelog CRUD ──────
   const adminSavePlan = useCallback(
     async (draft: PlanDraftInput, existingPlanId?: string, note?: string): Promise<PayPlanDoc> => {
-      if (!account?.isSuperAdmin) throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      const isEdit = Boolean(existingPlanId);
+      if (!canAdmin('plans', isEdit ? 'edit' : 'create')) {
+        throw new Error(
+          isEdit
+            ? 'প্ল্যান সম্পাদনা করার অনুমতি আপনার নেই।'
+            : 'নতুন প্ল্যান তৈরি করার অনুমতি আপনার নেই।'
+        );
+      }
+      const actor = getAdminActorMeta();
       const name = draft.name.trim().slice(0, 80);
       if (!name) throw new Error('প্ল্যানের নাম লিখুন।');
 
       const id = existingPlanId || generateDocId('plan');
-      const isEdit = Boolean(existingPlanId);
       const customPerks = draft.customPerks
         .map((l) => l.trim().slice(0, 160))
         .filter(Boolean)
@@ -3420,8 +3987,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             type: 'plan_change',
             action: isEdit ? 'update_plan' : 'create_plan',
             targetType: 'plan',
@@ -3437,7 +4003,6 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       try {
         const batch = writeBatch(db);
-        // If marking this plan as highlighted ("জনপ্রিয়"), unhighlight other plans
         if (cleanPlan.highlight) {
           for (const other of plans) {
             if (other.id !== id && other.highlight) {
@@ -3472,8 +4037,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           });
         }
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'plan_change',
           action: isEdit ? 'update_plan' : 'create_plan',
           targetType: 'plan',
@@ -3488,12 +4052,15 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
       return cleanPlan;
     },
-    [account, plans, isAutoTest]
+    [canAdmin, getAdminActorMeta, plans, isAutoTest]
   );
 
   const adminArchivePlan = useCallback(
     async (planId: string, archived: boolean, note?: string) => {
-      if (!account?.isSuperAdmin) throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      if (!canAdmin('plans', 'edit') && !canAdmin('plans', 'delete')) {
+        throw new Error('প্ল্যান আর্কাইভ বা পরিবর্তন করার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
       const target = plans.find((p) => p.id === planId);
       if (!target) throw new Error('প্ল্যানটি পাওয়া যায়নি।');
       const actId = generateDocId('act');
@@ -3515,8 +4082,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             type: 'plan_change',
             action: archived ? 'archive_plan' : 'unarchive_plan',
             targetType: 'plan',
@@ -3538,8 +4104,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           updatedAt: serverTimestamp(),
         });
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'plan_change',
           action: archived ? 'archive_plan' : 'unarchive_plan',
           targetType: 'plan',
@@ -3553,12 +4118,65 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         handleFirestoreError(err, OperationType.UPDATE, `payPlans/${planId}`);
       }
     },
-    [account, plans, isAutoTest]
+    [canAdmin, getAdminActorMeta, plans, isAutoTest]
+  );
+
+  const adminDeletePlan = useCallback(
+    async (planId: string, note?: string) => {
+      if (!canAdmin('plans', 'delete')) {
+        throw new Error('প্ল্যান মুছে ফেলার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
+      const target = plans.find((p) => p.id === planId);
+      if (!target) throw new Error('প্ল্যানটি পাওয়া যায়নি।');
+      const actId = generateDocId('act');
+      const cleanNote = (note || `প্ল্যান মুছে ফেলা হয়েছে: ${target.name}`).trim().slice(0, 300);
+      const detail = `প্ল্যান মুছে ফেলা হয়েছে: ${target.name}`;
+
+      if (isAutoTest) {
+        setPlans((prev) => prev.filter((p) => p.id !== planId));
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'plan_change',
+            action: 'delete_plan',
+            targetType: 'plan',
+            targetId: planId,
+            detail,
+            note: cleanNote,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'payPlans', planId));
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'plan_change',
+          action: 'delete_plan',
+          targetType: 'plan',
+          targetId: planId,
+          detail: detail.slice(0, 400),
+          note: cleanNote,
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `payPlans/${planId}`);
+      }
+    },
+    [canAdmin, getAdminActorMeta, plans, isAutoTest]
   );
 
   const adminSaveAddon = useCallback(
     async (draft: AddonDraftInput, existingAddonId?: string, note?: string): Promise<PayAddonDoc> => {
       if (!account?.isSuperAdmin) throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      const actor = getAdminActorMeta();
       const name = draft.name.trim().slice(0, 80);
       if (!name) throw new Error('অ্যাড-অন প্যাকের নাম লিখুন।');
 
@@ -3589,8 +4207,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             type: 'admin_action',
             action: isEdit ? 'update_addon' : 'create_addon',
             targetType: 'addon',
@@ -3621,8 +4238,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           batch.set(doc(db, 'payAddons', id), { ...payload, createdAt: serverTimestamp() });
         }
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'admin_action',
           action: isEdit ? 'update_addon' : 'create_addon',
           targetType: 'addon',
@@ -3637,7 +4253,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
       return cleanAddon;
     },
-    [account, addons, isAutoTest]
+    [account, getAdminActorMeta, addons, isAutoTest]
   );
 
   const adminSaveCoupon = useCallback(
@@ -3647,6 +4263,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       note?: string
     ): Promise<PayCouponDoc> => {
       if (!account?.isSuperAdmin) throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      const actor = getAdminActorMeta();
       const code = draft.code.trim().toUpperCase();
       if (!/^[A-Z0-9_-]{3,32}$/.test(code)) {
         throw new Error('কুপন কোড ৩–৩২ অক্ষরের ইংরেজি অক্ষর, সংখ্যা, _ বা - হতে হবে।');
@@ -3677,8 +4294,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             type: 'admin_action',
             action: isEdit ? 'update_coupon' : 'create_coupon',
             targetType: 'coupon',
@@ -3716,8 +4332,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           });
         }
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'admin_action',
           action: isEdit ? 'update_coupon' : 'create_coupon',
           targetType: 'coupon',
@@ -3732,7 +4347,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
       return cleanCoupon;
     },
-    [account, coupons, isAutoTest]
+    [account, getAdminActorMeta, coupons, isAutoTest]
   );
 
   const adminSaveChangelog = useCallback(
@@ -3811,9 +4426,18 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const adminSaveAppRelease = useCallback(
     async (draft: AppReleaseDraftInput, existingReleaseId?: string): Promise<AppReleaseDoc> => {
-      if (!account?.isSuperAdmin) {
-        throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      const isEdit = Boolean(existingReleaseId);
+      if (!canAdmin('app_updates', isEdit ? 'edit' : 'create')) {
+        throw new Error(
+          isEdit
+            ? 'APK ভার্সন সম্পাদনা করার অনুমতি আপনার নেই।'
+            : 'নতুন APK ভার্সন আপলোড করার অনুমতি আপনার নেই।'
+        );
       }
+      if (draft.publishNow && !canAdmin('app_updates', 'edit')) {
+        throw new Error('APK ভার্সন পাবলিশ করার অনুমতি আপনার নেই (সম্পাদনা সুইচ প্রয়োজন)।');
+      }
+      const actor = getAdminActorMeta();
       const versionName = draft.versionName.trim().slice(0, 40);
       if (!versionName) {
         throw new Error('ভার্সন নাম লিখুন (যেমন: 1.2.0)।');
@@ -3837,7 +4461,6 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const published = Boolean(draft.publishNow);
 
       const id = existingReleaseId || generateDocId('apk');
-      const isEdit = Boolean(existingReleaseId);
       const existing = existingReleaseId
         ? appReleases.find((r) => r.id === existingReleaseId)
         : undefined;
@@ -3885,8 +4508,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActivityLog((prev) => [
           {
             id: actId,
-            actorAccountId: account.id,
-            actorEmail: account.email,
+            ...actor,
             type: 'admin_action',
             action: actAction,
             targetType: 'app_release',
@@ -3902,7 +4524,6 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       try {
         const batch = writeBatch(db);
-        // Enforce single published rule: unpublish any other currently published versions
         if (published) {
           for (const other of appReleases) {
             if (other.id !== id && other.published) {
@@ -3942,8 +4563,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
 
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'admin_action',
           action: actAction,
           targetType: 'app_release',
@@ -3960,14 +4580,15 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       return savedRelease;
     },
-    [account, appReleases, isAutoTest]
+    [canAdmin, getAdminActorMeta, appReleases, isAutoTest]
   );
 
   const adminTogglePublishAppRelease = useCallback(
     async (releaseId: string, publish: boolean) => {
-      if (!account?.isSuperAdmin) {
-        throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      if (!canAdmin('app_updates', 'edit')) {
+        throw new Error('APK ভার্সন পাবলিশ বা আনপাবলিশ করার অনুমতি আপনার নেই।');
       }
+      const actor = getAdminActorMeta();
       const target = appReleases.find((r) => r.id === releaseId);
       if (!target) {
         throw new Error('ভার্সন খুঁজে পাওয়া যায়নি।');
@@ -3995,6 +4616,20 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             return r;
           })
         );
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: publish ? 'publish_app_release' : 'unpublish_app_release',
+            targetType: 'app_release',
+            targetId: releaseId,
+            detail,
+            note: detail,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
         return;
       }
 
@@ -4016,8 +4651,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           updatedAt: serverTimestamp(),
         });
         batch.set(doc(db, 'payActivity', actId), {
-          actorAccountId: account.id,
-          actorEmail: account.email,
+          ...actor,
           type: 'admin_action',
           action: publish ? 'publish_app_release' : 'unpublish_app_release',
           targetType: 'app_release',
@@ -4031,17 +4665,37 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         handleFirestoreError(err, OperationType.UPDATE, `appReleases/${releaseId}`);
       }
     },
-    [account, appReleases, isAutoTest]
+    [canAdmin, getAdminActorMeta, appReleases, isAutoTest]
   );
 
   const adminDeleteAppRelease = useCallback(
     async (releaseId: string) => {
-      if (!account?.isSuperAdmin) {
-        throw new Error('শুধুমাত্র সুপার অ্যাডমিনের অনুমতি রয়েছে।');
+      if (!canAdmin('app_updates', 'delete')) {
+        throw new Error('APK ভার্সন ডিলিট করার অনুমতি আপনার নেই।');
       }
+      const actor = getAdminActorMeta();
       const target = appReleases.find((r) => r.id === releaseId);
+      const actId = generateDocId('act');
+      const detail = target
+        ? `Android App v${target.versionName} (কোড ${target.versionCode}) ডিলিট করা হয়েছে`
+        : `Android App ভার্সন ডিলিট (${releaseId})`;
+
       if (isAutoTest) {
         setAppReleases((prev) => prev.filter((r) => r.id !== releaseId));
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: 'delete_app_release',
+            targetType: 'app_release',
+            targetId: releaseId,
+            detail,
+            note: detail,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
         return;
       }
       if (target?.storagePath) {
@@ -4052,12 +4706,24 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       }
       try {
-        await deleteDoc(doc(db, 'appReleases', releaseId));
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'appReleases', releaseId));
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: 'delete_app_release',
+          targetType: 'app_release',
+          targetId: releaseId,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, `appReleases/${releaseId}`);
       }
     },
-    [account, appReleases, isAutoTest]
+    [canAdmin, getAdminActorMeta, appReleases, isAutoTest]
   );
 
   const recordAppReleaseDownload = useCallback(
@@ -4090,6 +4756,1115 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [appReleases, publishedReleasesSnapshot, publishedAppRelease, isAutoTest]
   );
 
+  // ─── Admin / Staff Payment Verification & Note Mutations (Area: payments) ──
+  const adminVerifyOrNotePaymentSession = useCallback(
+    async (
+      sessionId: string,
+      updates: {
+        status?: 'paid' | 'failed' | 'cancelled' | 'waiting';
+        trxId?: string | null;
+        manualNote: string;
+      }
+    ) => {
+      if (!canAdmin('payments', 'edit')) {
+        throw new Error('পেমেন্ট ও লেনদেন যাচাই বা নোট সম্পাদনার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
+      const target = allSessions.find((s) => s.id === sessionId);
+      if (!target) throw new Error('পেমেন্ট সেশনটি খুঁজে পাওয়া যায়নি।');
+      const cleanNote = updates.manualNote.trim().slice(0, 300);
+      if (!cleanNote) throw new Error('যাচাই বা মন্তব্যের জন্য নোট লিখুন।');
+
+      const nextStatus = updates.status || target.status;
+      const nextTrxId =
+        updates.trxId !== undefined
+          ? updates.trxId
+            ? updates.trxId.trim().slice(0, 64)
+            : null
+          : target.trxId;
+      const nowMs = Date.now();
+      const actId = generateDocId('act');
+      const detail = `পেমেন্ট সেশন (${target.orderId}): ${target.status} → ${nextStatus}`;
+
+      if (isAutoTest) {
+        setAllSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  status: nextStatus,
+                  trxId: nextTrxId,
+                  manual: true,
+                  manualNote: cleanNote,
+                  paidAtMs: nextStatus === 'paid' ? s.paidAtMs ?? nowMs : s.paidAtMs,
+                }
+              : s
+          )
+        );
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            accountId: target.accountId,
+            type: 'admin_action',
+            action: 'verify_payment_session',
+            targetType: 'session',
+            targetId: sessionId,
+            detail,
+            note: cleanNote,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        const patch: Record<string, unknown> = {
+          status: nextStatus,
+          trxId: nextTrxId,
+          manual: true,
+          manualNote: cleanNote,
+          updatedAt: serverTimestamp(),
+        };
+        if (nextStatus === 'paid' && !target.paidAtMs) {
+          patch.paidAt = serverTimestamp();
+        }
+        batch.update(doc(db, 'paySessions', sessionId), patch);
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          accountId: target.accountId,
+          type: 'admin_action',
+          action: 'verify_payment_session',
+          targetType: 'session',
+          targetId: sessionId,
+          detail: detail.slice(0, 400),
+          note: cleanNote,
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `paySessions/${sessionId}`);
+      }
+    },
+    [canAdmin, getAdminActorMeta, allSessions, isAutoTest]
+  );
+
+  const adminDeletePaymentSession = useCallback(
+    async (sessionId: string, note?: string) => {
+      if (!canAdmin('payments', 'delete')) {
+        throw new Error('পেমেন্ট রেকর্ড মুছে ফেলার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
+      const target = allSessions.find((s) => s.id === sessionId);
+      const actId = generateDocId('act');
+      const cleanNote = (note || `পেমেন্ট সেশন মুছে ফেলা হয়েছে (${target?.orderId || sessionId})`)
+        .trim()
+        .slice(0, 300);
+      const detail = `পেমেন্ট সেশন মোছা হয়েছে: ${target?.orderId || sessionId}`;
+
+      if (isAutoTest) {
+        setAllSessions((prev) => prev.filter((s) => s.id !== sessionId));
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            accountId: target?.accountId,
+            type: 'admin_action',
+            action: 'delete_payment_session',
+            targetType: 'session',
+            targetId: sessionId,
+            detail,
+            note: cleanNote,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'paySessions', sessionId));
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          accountId: target?.accountId || null,
+          type: 'admin_action',
+          action: 'delete_payment_session',
+          targetType: 'session',
+          targetId: sessionId,
+          detail: detail.slice(0, 400),
+          note: cleanNote,
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `paySessions/${sessionId}`);
+      }
+    },
+    [canAdmin, getAdminActorMeta, allSessions, isAutoTest]
+  );
+
+  // ─── Admin / Staff Merchant Support Notes CRUD (Area: merchant_notes) ─────
+  const saveMerchantSupportNote = useCallback(
+    async (
+      input: { merchantAccountId: string; merchantEmail: string; body: string },
+      existingNoteId?: string
+    ): Promise<MerchantSupportNoteDoc> => {
+      const isEdit = Boolean(existingNoteId);
+      if (!canAdmin('merchant_notes', isEdit ? 'edit' : 'create')) {
+        throw new Error(
+          isEdit
+            ? 'মার্চেন্ট নোট সম্পাদনার অনুমতি আপনার নেই।'
+            : 'মার্চেন্ট নোট যোগ করার অনুমতি আপনার নেই।'
+        );
+      }
+      const actor = getAdminActorMeta();
+      const body = input.body.trim().slice(0, 2000);
+      if (!body) throw new Error('নোট বা মন্তব্য লিখুন।');
+      const merchantAccountId = input.merchantAccountId.trim().slice(0, 128);
+      if (!merchantAccountId) throw new Error('মার্চেন্ট নির্বাচন করুন।');
+      const merchantEmail = input.merchantEmail.trim().slice(0, 160);
+
+      const id = existingNoteId || generateDocId('note');
+      const existing = existingNoteId
+        ? merchantSupportNotes.find((n) => n.id === existingNoteId)
+        : undefined;
+      const nowMs = Date.now();
+
+      const savedNote: MerchantSupportNoteDoc = {
+        id,
+        merchantAccountId,
+        merchantEmail,
+        body,
+        authorUid: existing?.authorUid || actor.actorAccountId,
+        authorName: existing?.authorName || actor.actorName,
+        authorEmail: existing?.authorEmail || actor.actorEmail,
+        authorRoleName: existing?.authorRoleName || actor.actorRoleName,
+        createdAtMs: existing?.createdAtMs ?? nowMs,
+        updatedAtMs: nowMs,
+      };
+
+      const actId = generateDocId('act');
+      const detail = `মার্চেন্ট নোট (${merchantEmail || merchantAccountId}): ${body.slice(0, 100)}`;
+
+      if (isAutoTest) {
+        setMerchantSupportNotes((prev) =>
+          isEdit ? prev.map((n) => (n.id === id ? savedNote : n)) : [savedNote, ...prev]
+        );
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            accountId: merchantAccountId,
+            type: 'admin_action',
+            action: isEdit ? 'update_merchant_note' : 'create_merchant_note',
+            targetType: 'merchant_note',
+            targetId: id,
+            detail,
+            note: body.slice(0, 300),
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return savedNote;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        const payload = {
+          merchantAccountId: savedNote.merchantAccountId,
+          merchantEmail: savedNote.merchantEmail,
+          body: savedNote.body,
+          authorUid: savedNote.authorUid,
+          authorName: savedNote.authorName,
+          authorEmail: savedNote.authorEmail,
+          authorRoleName: savedNote.authorRoleName,
+          updatedAt: serverTimestamp(),
+        };
+        if (isEdit) {
+          batch.update(doc(db, 'merchantSupportNotes', id), payload);
+        } else {
+          batch.set(doc(db, 'merchantSupportNotes', id), {
+            ...payload,
+            createdAt: serverTimestamp(),
+          });
+        }
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          accountId: merchantAccountId,
+          type: 'admin_action',
+          action: isEdit ? 'update_merchant_note' : 'create_merchant_note',
+          targetType: 'merchant_note',
+          targetId: id,
+          detail: detail.slice(0, 400),
+          note: body.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `merchantSupportNotes/${id}`);
+      }
+
+      return savedNote;
+    },
+    [canAdmin, getAdminActorMeta, merchantSupportNotes, isAutoTest]
+  );
+
+  const deleteMerchantSupportNote = useCallback(
+    async (noteId: string) => {
+      if (!canAdmin('merchant_notes', 'delete')) {
+        throw new Error('মার্চেন্ট নোট মোছার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
+      const target = merchantSupportNotes.find((n) => n.id === noteId);
+      const actId = generateDocId('act');
+      const detail = `মার্চেন্ট নোট মুছে ফেলা হয়েছে (${target?.merchantEmail || noteId})`;
+
+      if (isAutoTest) {
+        setMerchantSupportNotes((prev) => prev.filter((n) => n.id !== noteId));
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            accountId: target?.merchantAccountId,
+            type: 'admin_action',
+            action: 'delete_merchant_note',
+            targetType: 'merchant_note',
+            targetId: noteId,
+            detail,
+            note: detail,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'merchantSupportNotes', noteId));
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          accountId: target?.merchantAccountId || null,
+          type: 'admin_action',
+          action: 'delete_merchant_note',
+          targetType: 'merchant_note',
+          targetId: noteId,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `merchantSupportNotes/${noteId}`);
+      }
+    },
+    [canAdmin, getAdminActorMeta, merchantSupportNotes, isAutoTest]
+  );
+
+  const logAdminReportExport = useCallback(
+    async (reportLabelBn: string) => {
+      if (!canAdmin('reports', 'export')) {
+        throw new Error('রিপোর্ট এক্সপোর্ট করার অনুমতি আপনার নেই।');
+      }
+      const actor = getAdminActorMeta();
+      const actId = generateDocId('act');
+      const detail = `রিপোর্ট এক্সপোর্ট: ${reportLabelBn}`.slice(0, 400);
+
+      if (isAutoTest) {
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: 'export_report',
+            targetType: 'platform',
+            targetId: 'reports',
+            detail,
+            note: detail,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        await setDoc(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: 'export_report',
+          targetType: 'platform',
+          targetId: 'reports',
+          detail,
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+      } catch {
+        // Non-fatal export audit
+      }
+    },
+    [canAdmin, getAdminActorMeta, isAutoTest]
+  );
+
+  // ─── Part D.4: Staff First-Login Forced Password Change ─────────────────
+  const completeStaffFirstLoginPasswordChange = useCallback(
+    async (newPassword: string, currentTempPassword?: string) => {
+      if (!currentStaff) {
+        throw new Error('স্টাফ অ্যাকাউন্ট খুঁজে পাওয়া যায়নি।');
+      }
+      const cleanNew = newPassword.trim();
+      if (cleanNew.length < 6) {
+        throw new Error('নতুন পাসওয়ার্ড অন্তত ৬ অক্ষরের হতে হবে।');
+      }
+
+      const nowMs = Date.now();
+      const actId = generateDocId('act');
+      const detail = `প্রথম লগইনে পাসওয়ার্ড পরিবর্তন সম্পন্ন: ${currentStaff.name}`;
+
+      if (isAutoTest) {
+        setCurrentStaff((prev) =>
+          prev ? { ...prev, mustChangePassword: false, updatedAtMs: nowMs } : prev
+        );
+        setStaffMembers((prev) =>
+          prev.map((s) =>
+            s.id === currentStaff.id
+              ? { ...s, mustChangePassword: false, updatedAtMs: nowMs }
+              : s
+          )
+        );
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            actorAccountId: currentStaff.id,
+            actorEmail: currentStaff.email,
+            actorName: currentStaff.name,
+            actorRoleId: currentStaff.roleId,
+            actorRoleName: currentStaff.roleName,
+            type: 'admin_action',
+            action: 'staff_password_changed',
+            targetType: 'staff',
+            targetId: currentStaff.id,
+            detail,
+            note: detail,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      if (!fbUser) throw new Error('সাইন ইন সেশন পাওয়া যায়নি। আবার লগইন করুন।');
+
+      try {
+        await updatePassword(fbUser, cleanNew);
+      } catch (err) {
+        if (currentTempPassword && fbUser.email) {
+          const cred = EmailAuthProvider.credential(fbUser.email, currentTempPassword);
+          await reauthenticateWithCredential(fbUser, cred);
+          await updatePassword(fbUser, cleanNew);
+        } else {
+          throw err;
+        }
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'staff', currentStaff.id), {
+          mustChangePassword: false,
+          lastLoginAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db, 'payActivity', actId), {
+          actorAccountId: currentStaff.id,
+          actorEmail: currentStaff.email,
+          actorName: currentStaff.name,
+          actorRoleId: currentStaff.roleId,
+          actorRoleName: currentStaff.roleName,
+          type: 'admin_action',
+          action: 'staff_password_changed',
+          targetType: 'staff',
+          targetId: currentStaff.id,
+          detail,
+          note: detail,
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `staff/${currentStaff.id}`);
+      }
+    },
+    [currentStaff, fbUser, isAutoTest]
+  );
+
+  // ─── Part B, C, D, E: Super Admin ONLY Staff & Custom Roles Management ──
+  const adminSaveStaffRole = useCallback(
+    async (
+      input: { name: string; rules: StaffRuleMatrix; isStarter?: boolean },
+      existingRoleId?: string
+    ): Promise<StaffRoleDoc> => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন রোল তৈরি বা পরিবর্তন করতে পারেন।');
+      }
+      const cleanName = input.name.trim().slice(0, 80);
+      if (!cleanName) throw new Error('রোলের নাম লিখুন (যেমন: হিসাবরক্ষক, সাপোর্ট লিড)।');
+
+      const duplicateByName = staffRoles.find(
+        (r) =>
+          r.id !== existingRoleId &&
+          r.name.trim().toLowerCase() === cleanName.toLowerCase()
+      );
+      if (duplicateByName) {
+        throw new Error(`"${cleanName}" নামে ইতিমধ্যে একটি রোল রয়েছে।`);
+      }
+
+      const cleanRules = normalizeStaffRuleMatrix(input.rules);
+      const id = existingRoleId || generateDocId('role');
+      const isEdit = Boolean(existingRoleId);
+      const existing = existingRoleId ? staffRoles.find((r) => r.id === existingRoleId) : undefined;
+      const nowMs = Date.now();
+
+      const savedRole: StaffRoleDoc = {
+        id,
+        name: cleanName,
+        rules: cleanRules,
+        isStarter: existing?.isStarter ?? Boolean(input.isStarter),
+        createdAtMs: existing?.createdAtMs ?? nowMs,
+        updatedAtMs: nowMs,
+      };
+
+      const affectedStaff = isEdit ? staffMembers.filter((s) => s.roleId === id) : [];
+      const actId = generateDocId('act');
+      const detail = isEdit
+        ? `রোল আপডেট: ${cleanName} (${affectedStaff.length} জন স্টাফের নিয়ম সিঙ্ক হয়েছে)`
+        : `নতুন রোল তৈরি: ${cleanName}`;
+      const actor = getAdminActorMeta();
+
+      if (isAutoTest) {
+        setStaffRoles((prev) =>
+          isEdit ? prev.map((r) => (r.id === id ? savedRole : r)) : [...prev, savedRole]
+        );
+        if (isEdit && affectedStaff.length > 0) {
+          setStaffMembers((prev) =>
+            prev.map((s) => {
+              if (s.roleId !== id) return s;
+              const nextEffective = resolveStaffEffectiveRules(
+                cleanRules,
+                s.hasCustomOverride,
+                s.overrideRules
+              );
+              return {
+                ...s,
+                roleName: cleanName,
+                effectiveRules: nextEffective,
+                updatedAtMs: nowMs,
+              };
+            })
+          );
+        }
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: isEdit ? 'update_staff_role' : 'create_staff_role',
+            targetType: 'role',
+            targetId: id,
+            detail,
+            note: detail,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return savedRole;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        const rolePayload = {
+          name: savedRole.name,
+          rules: savedRole.rules,
+          isStarter: Boolean(savedRole.isStarter),
+          updatedAt: serverTimestamp(),
+        };
+        if (isEdit) {
+          batch.update(doc(db, 'roles', id), rolePayload);
+        } else {
+          batch.set(doc(db, 'roles', id), {
+            ...rolePayload,
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        // Part B.3: Changing a role's rules applies immediately to every staff member on that role
+        if (isEdit) {
+          for (const member of affectedStaff) {
+            const nextEffective = resolveStaffEffectiveRules(
+              cleanRules,
+              member.hasCustomOverride,
+              member.overrideRules
+            );
+            batch.update(doc(db, 'staff', member.id), {
+              roleName: cleanName,
+              effectiveRules: nextEffective,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: isEdit ? 'update_staff_role' : 'create_staff_role',
+          targetType: 'role',
+          targetId: id,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `roles/${id}`);
+      }
+
+      return savedRole;
+    },
+    [account, staffRoles, staffMembers, getAdminActorMeta, isAutoTest]
+  );
+
+  const adminDuplicateStaffRole = useCallback(
+    async (roleId: string): Promise<StaffRoleDoc> => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন রোল ডুপ্লিকেট করতে পারেন।');
+      }
+      const source = staffRoles.find((r) => r.id === roleId);
+      if (!source) throw new Error('রোলটি খুঁজে পাওয়া যায়নি।');
+      let copyName = `${source.name} (কপি)`;
+      let counter = 2;
+      while (
+        staffRoles.some((r) => r.name.trim().toLowerCase() === copyName.toLowerCase())
+      ) {
+        copyName = `${source.name} (কপি ${counter})`;
+        counter += 1;
+      }
+      return adminSaveStaffRole({
+        name: copyName.slice(0, 80),
+        rules: source.rules,
+        isStarter: false,
+      });
+    },
+    [account, staffRoles, adminSaveStaffRole]
+  );
+
+  const adminDeleteStaffRole = useCallback(
+    async (roleId: string) => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন রোল মুছে ফেলতে পারেন।');
+      }
+      const target = staffRoles.find((r) => r.id === roleId);
+      if (!target) throw new Error('রোলটি খুঁজে পাওয়া যায়নি।');
+
+      // Part B.1: Deletion is allowed ONLY when no staff is assigned to it
+      const assignedStaff = staffMembers.filter((s) => s.roleId === roleId);
+      if (assignedStaff.length > 0) {
+        throw new Error(
+          `এই রোলে ${assignedStaff.length.toLocaleString('bn-BD')} জন স্টাফ নিযুক্ত আছেন। রোলটি মুছে ফেলার আগে তাদের অন্য রোলে স্থানান্তর করুন।`
+        );
+      }
+
+      const actor = getAdminActorMeta();
+      const actId = generateDocId('act');
+      const detail = `রোল মুছে ফেলা হয়েছে: ${target.name}`;
+
+      if (isAutoTest) {
+        setStaffRoles((prev) => prev.filter((r) => r.id !== roleId));
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: 'delete_staff_role',
+            targetType: 'role',
+            targetId: roleId,
+            detail,
+            note: detail,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'roles', roleId));
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: 'delete_staff_role',
+          targetType: 'role',
+          targetId: roleId,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `roles/${roleId}`);
+      }
+    },
+    [account, staffRoles, staffMembers, getAdminActorMeta, isAutoTest]
+  );
+
+  const adminCreateStaffAccount = useCallback(
+    async (input: {
+      name: string;
+      email: string;
+      phone: string;
+      tempPassword: string;
+      roleId: string;
+      hasCustomOverride: boolean;
+      overrideRules: StaffRuleMatrix | null;
+    }): Promise<StaffMemberDoc> => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন নতুন স্টাফ অ্যাকাউন্ট তৈরি করতে পারেন।');
+      }
+
+      const cleanName = input.name.trim().slice(0, 80);
+      if (!cleanName) throw new Error('স্টাফের নাম লিখুন।');
+      const cleanEmail = input.email.trim().toLowerCase();
+      if (!cleanEmail || !cleanEmail.includes('@') || cleanEmail.length > 160) {
+        throw new Error('সঠিক ইমেইল ঠিকানা লিখুন।');
+      }
+      if (isSuperAdminEmail(cleanEmail)) {
+        throw new Error('সুপার অ্যাডমিনের ইমেইল দিয়ে স্টাফ অ্যাকাউন্ট তৈরি করা যাবে না।');
+      }
+      if (staffMembers.some((s) => s.email.toLowerCase() === cleanEmail)) {
+        throw new Error('এই ইমেইল দিয়ে ইতিমধ্যে একজন স্টাফ অ্যাকাউন্ট রয়েছে।');
+      }
+      const cleanPhone = input.phone.trim().slice(0, 32);
+      if (!cleanPhone) throw new Error('স্টাফের ফোন নম্বর লিখুন।');
+      const tempPassword = input.tempPassword;
+      if (!tempPassword || tempPassword.length < 6) {
+        throw new Error('অস্থায়ী পাসওয়ার্ড অন্তত ৬ অক্ষরের হতে হবে।');
+      }
+
+      const role = staffRoles.find((r) => r.id === input.roleId);
+      if (!role) throw new Error('একটি বৈধ রোল নির্বাচন করুন।');
+
+      const hasCustomOverride = Boolean(input.hasCustomOverride && input.overrideRules);
+      const overrideRules =
+        hasCustomOverride && input.overrideRules
+          ? normalizeStaffRuleMatrix(input.overrideRules)
+          : null;
+      const effectiveRules = resolveStaffEffectiveRules(
+        role.rules,
+        hasCustomOverride,
+        overrideRules
+      );
+
+      const nowMs = Date.now();
+      const actor = getAdminActorMeta();
+      const actId = generateDocId('act');
+      const detail = `নতুন স্টাফ যোগ করা হয়েছে: ${cleanName} (${cleanEmail}) — রোল: ${role.name}${
+        hasCustomOverride ? ' [কাস্টম নিয়ম]' : ''
+      }`;
+
+      if (isAutoTest) {
+        const fakeUid = generateDocId('staff_uid');
+        const createdStaff: StaffMemberDoc = {
+          id: fakeUid,
+          name: cleanName,
+          email: cleanEmail,
+          phone: cleanPhone,
+          roleId: role.id,
+          roleName: role.name,
+          hasCustomOverride,
+          overrideRules,
+          effectiveRules,
+          status: 'active',
+          mustChangePassword: true,
+          lastLoginAtMs: null,
+          createdAtMs: nowMs,
+          updatedAtMs: nowMs,
+        };
+        setStaffMembers((prev) => [createdStaff, ...prev]);
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: 'create_staff_account',
+            targetType: 'staff',
+            targetId: fakeUid,
+            detail,
+            note: detail,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return createdStaff;
+      }
+
+      // Part D.3: Create Firebase Auth account on an isolated secondary Firebase App
+      // so the Super Admin's active session is NEVER logged out or disturbed.
+      const secondaryAppName = `StaffProvisioner_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const secondaryApp = initializeApp(firebaseProjectConfig, secondaryAppName);
+      const secondaryAuth = getAuth(secondaryApp);
+      let newStaffUid = '';
+
+      try {
+        const cred = await createUserWithEmailAndPassword(
+          secondaryAuth,
+          cleanEmail,
+          tempPassword
+        );
+        newStaffUid = cred.user.uid;
+        await updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
+        await signOut(secondaryAuth).catch(() => {});
+      } catch (authErr) {
+        const code = (authErr as { code?: string })?.code || '';
+        if (code === 'auth/email-already-in-use') {
+          throw new Error('এই ইমেইল দিয়ে ইতিমধ্যে একটি অ্যাকাউন্ট রয়েছে। অন্য ইমেইল ব্যবহার করুন।');
+        }
+        if (code === 'auth/invalid-email') {
+          throw new Error('ইমেইল ঠিকানাটি সঠিক নয়।');
+        }
+        if (code === 'auth/weak-password') {
+          throw new Error('অস্থায়ী পাসওয়ার্ড অন্তত ৬ অক্ষরের হতে হবে।');
+        }
+        throw new Error(
+          authErr instanceof Error ? authErr.message : 'স্টাফ অ্যাকাউন্ট তৈরি করা যায়নি।'
+        );
+      } finally {
+        await deleteApp(secondaryApp).catch(() => {});
+      }
+
+      const createdStaff: StaffMemberDoc = {
+        id: newStaffUid,
+        name: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        roleId: role.id,
+        roleName: role.name,
+        hasCustomOverride,
+        overrideRules,
+        effectiveRules,
+        status: 'active',
+        mustChangePassword: true,
+        lastLoginAtMs: null,
+        createdAtMs: nowMs,
+        updatedAtMs: nowMs,
+      };
+
+      // Note: Plain-text temporary password is NEVER stored in Firestore (Part G)
+      try {
+        const batch = writeBatch(db);
+        batch.set(doc(db, 'staff', newStaffUid), {
+          name: createdStaff.name,
+          email: createdStaff.email,
+          phone: createdStaff.phone,
+          roleId: createdStaff.roleId,
+          roleName: createdStaff.roleName,
+          hasCustomOverride: createdStaff.hasCustomOverride,
+          overrideRules: createdStaff.overrideRules,
+          effectiveRules: createdStaff.effectiveRules,
+          status: 'active',
+          mustChangePassword: true,
+          lastLoginAt: null,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: 'create_staff_account',
+          targetType: 'staff',
+          targetId: newStaffUid,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `staff/${newStaffUid}`);
+      }
+
+      return createdStaff;
+    },
+    [account, staffMembers, staffRoles, getAdminActorMeta, isAutoTest]
+  );
+
+  const adminUpdateStaffMember = useCallback(
+    async (
+      staffUid: string,
+      input: {
+        name?: string;
+        phone?: string;
+        roleId: string;
+        hasCustomOverride: boolean;
+        overrideRules: StaffRuleMatrix | null;
+      }
+    ) => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন স্টাফের রোল বা নিয়ম পরিবর্তন করতে পারেন।');
+      }
+      const target = staffMembers.find((s) => s.id === staffUid);
+      if (!target) throw new Error('স্টাফ অ্যাকাউন্টটি খুঁজে পাওয়া যায়নি।');
+      const role = staffRoles.find((r) => r.id === input.roleId);
+      if (!role) throw new Error('একটি বৈধ রোল নির্বাচন করুন।');
+
+      const cleanName = input.name !== undefined ? input.name.trim().slice(0, 80) : target.name;
+      if (!cleanName) throw new Error('স্টাফের নাম লিখুন।');
+      const cleanPhone =
+        input.phone !== undefined ? input.phone.trim().slice(0, 32) : target.phone;
+
+      const hasCustomOverride = Boolean(input.hasCustomOverride && input.overrideRules);
+      const overrideRules =
+        hasCustomOverride && input.overrideRules
+          ? normalizeStaffRuleMatrix(input.overrideRules)
+          : null;
+      const effectiveRules = resolveStaffEffectiveRules(
+        role.rules,
+        hasCustomOverride,
+        overrideRules
+      );
+
+      const nowMs = Date.now();
+      const actor = getAdminActorMeta();
+      const actId = generateDocId('act');
+      const detail = `স্টাফ আপডেট: ${cleanName} (${target.email}) — রোল: ${role.name}${
+        hasCustomOverride ? ' [কাস্টম নিয়ম]' : ''
+      }`;
+
+      if (isAutoTest) {
+        setStaffMembers((prev) =>
+          prev.map((s) =>
+            s.id === staffUid
+              ? {
+                  ...s,
+                  name: cleanName,
+                  phone: cleanPhone,
+                  roleId: role.id,
+                  roleName: role.name,
+                  hasCustomOverride,
+                  overrideRules,
+                  effectiveRules,
+                  updatedAtMs: nowMs,
+                }
+              : s
+          )
+        );
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: 'update_staff_member',
+            targetType: 'staff',
+            targetId: staffUid,
+            detail,
+            note: detail,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'staff', staffUid), {
+          name: cleanName,
+          phone: cleanPhone,
+          roleId: role.id,
+          roleName: role.name,
+          hasCustomOverride,
+          overrideRules,
+          effectiveRules,
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: 'update_staff_member',
+          targetType: 'staff',
+          targetId: staffUid,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `staff/${staffUid}`);
+      }
+    },
+    [account, staffMembers, staffRoles, getAdminActorMeta, isAutoTest]
+  );
+
+  const adminToggleStaffStatus = useCallback(
+    async (staffUid: string, nextStatus: StaffMemberStatus) => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন স্টাফ অ্যাকাউন্ট সক্রিয় বা বন্ধ করতে পারেন।');
+      }
+      const target = staffMembers.find((s) => s.id === staffUid);
+      if (!target) throw new Error('স্টাফ অ্যাকাউন্টটি খুঁজে পাওয়া যায়নি।');
+
+      const nowMs = Date.now();
+      const actor = getAdminActorMeta();
+      const actId = generateDocId('act');
+      const detail = `স্টাফ অ্যাকাউন্ট ${nextStatus === 'active' ? 'সক্রিয়' : 'বন্ধ'} করা হয়েছে: ${target.name} (${target.email})`;
+
+      if (isAutoTest) {
+        setStaffMembers((prev) =>
+          prev.map((s) =>
+            s.id === staffUid ? { ...s, status: nextStatus, updatedAtMs: nowMs } : s
+          )
+        );
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: nextStatus === 'active' ? 'activate_staff' : 'disable_staff',
+            targetType: 'staff',
+            targetId: staffUid,
+            detail,
+            note: detail,
+            createdAtMs: nowMs,
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'staff', staffUid), {
+          status: nextStatus,
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: nextStatus === 'active' ? 'activate_staff' : 'disable_staff',
+          targetType: 'staff',
+          targetId: staffUid,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `staff/${staffUid}`);
+      }
+    },
+    [account, staffMembers, getAdminActorMeta, isAutoTest]
+  );
+
+  const adminSendStaffPasswordReset = useCallback(
+    async (staffUid: string) => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন স্টাফের পাসওয়ার্ড রিসেট ইমেইল পাঠাতে পারেন।');
+      }
+      const target = staffMembers.find((s) => s.id === staffUid);
+      if (!target) throw new Error('স্টাফ অ্যাকাউন্টটি খুঁজে পাওয়া যায়নি।');
+
+      const actor = getAdminActorMeta();
+      const actId = generateDocId('act');
+      const detail = `স্টাফ পাসওয়ার্ড রিসেট ইমেইল পাঠানো হয়েছে: ${target.name} (${target.email})`;
+
+      if (isAutoTest) {
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: 'reset_staff_password_email',
+            targetType: 'staff',
+            targetId: staffUid,
+            detail,
+            note: detail,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      await sendPasswordResetEmail(auth, target.email);
+      try {
+        await setDoc(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: 'reset_staff_password_email',
+          targetType: 'staff',
+          targetId: staffUid,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+      } catch {
+        // Non-fatal audit write
+      }
+    },
+    [account, staffMembers, getAdminActorMeta, isAutoTest]
+  );
+
+  const adminRemoveStaffMember = useCallback(
+    async (staffUid: string) => {
+      if (!account?.isSuperAdmin) {
+        throw new Error('শুধুমাত্র সুপার অ্যাডমিন স্টাফ অ্যাকাউন্ট মুছে ফেলতে পারেন।');
+      }
+      const target = staffMembers.find((s) => s.id === staffUid);
+      if (!target) throw new Error('স্টাফ অ্যাকাউন্টটি খুঁজে পাওয়া যায়নি।');
+
+      const actor = getAdminActorMeta();
+      const actId = generateDocId('act');
+      const detail = `স্টাফ অ্যাকাউন্ট মুছে ফেলা হয়েছে: ${target.name} (${target.email}) — পূর্বের অ্যাক্টিভিটি লগ অক্ষুণ্ণ রয়েছে`;
+
+      if (isAutoTest) {
+        setStaffMembers((prev) => prev.filter((s) => s.id !== staffUid));
+        setActivityLog((prev) => [
+          {
+            id: actId,
+            ...actor,
+            type: 'admin_action',
+            action: 'remove_staff_member',
+            targetType: 'staff',
+            targetId: staffUid,
+            detail,
+            note: detail,
+            createdAtMs: Date.now(),
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'staff', staffUid));
+        batch.set(doc(db, 'payActivity', actId), {
+          ...actor,
+          type: 'admin_action',
+          action: 'remove_staff_member',
+          targetType: 'staff',
+          targetId: staffUid,
+          detail: detail.slice(0, 400),
+          note: detail.slice(0, 300),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `staff/${staffUid}`);
+      }
+    },
+    [account, staffMembers, getAdminActorMeta, isAutoTest]
+  );
+
   const dismissNewDeviceLoginAlert = useCallback(() => setNewDeviceLoginAlert(false), []);
 
   const value = useMemo<PayVerifyContextValue>(
@@ -4100,6 +5875,11 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       dataLoading,
       platformConfig,
       account,
+      currentStaff,
+      isAdminPortalUser,
+      staffBlockedReason,
+      clearStaffBlockedReason,
+      canAdmin,
       planEvaluation,
       effectivePlan,
       plans,
@@ -4132,6 +5912,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       allDevices,
       activityLog,
       subscriptionPurchases,
+      staffRoles,
+      staffMembers,
+      merchantSupportNotes,
       appReleases,
       publishedAppRelease,
       appReleasesLoaded,
@@ -4143,6 +5926,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       signOutUser,
       signOutAllSessions,
       markChangelogRead,
+      completeStaffFirstLoginPasswordChange,
       createStore,
       saveStorePaymentMethods,
       saveStoreSettings,
@@ -4168,10 +5952,12 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       adminSaveWorkerBaseUrl,
       adminSavePlatformSettings,
       adminUpdateAccount,
+      adminDeleteMerchantAccount,
       adminConvertStoreType,
       adminReassignStore,
       adminSavePlan,
       adminArchivePlan,
+      adminDeletePlan,
       adminSaveAddon,
       adminSaveCoupon,
       adminSaveChangelog,
@@ -4180,6 +5966,19 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       adminTogglePublishAppRelease,
       adminDeleteAppRelease,
       recordAppReleaseDownload,
+      adminVerifyOrNotePaymentSession,
+      adminDeletePaymentSession,
+      saveMerchantSupportNote,
+      deleteMerchantSupportNote,
+      logAdminReportExport,
+      adminSaveStaffRole,
+      adminDuplicateStaffRole,
+      adminDeleteStaffRole,
+      adminCreateStaffAccount,
+      adminUpdateStaffMember,
+      adminToggleStaffStatus,
+      adminSendStaffPasswordReset,
+      adminRemoveStaffMember,
     }),
     [
       activeUser,
@@ -4188,6 +5987,11 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       dataLoading,
       platformConfig,
       account,
+      currentStaff,
+      isAdminPortalUser,
+      staffBlockedReason,
+      clearStaffBlockedReason,
+      canAdmin,
       planEvaluation,
       effectivePlan,
       plans,
@@ -4219,6 +6023,9 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       allDevices,
       activityLog,
       subscriptionPurchases,
+      staffRoles,
+      staffMembers,
+      merchantSupportNotes,
       appReleases,
       publishedAppRelease,
       appReleasesLoaded,
@@ -4230,6 +6037,7 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       signOutUser,
       signOutAllSessions,
       markChangelogRead,
+      completeStaffFirstLoginPasswordChange,
       createStore,
       saveStorePaymentMethods,
       saveStoreSettings,
@@ -4255,10 +6063,12 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       adminSaveWorkerBaseUrl,
       adminSavePlatformSettings,
       adminUpdateAccount,
+      adminDeleteMerchantAccount,
       adminConvertStoreType,
       adminReassignStore,
       adminSavePlan,
       adminArchivePlan,
+      adminDeletePlan,
       adminSaveAddon,
       adminSaveCoupon,
       adminSaveChangelog,
@@ -4267,6 +6077,19 @@ export const PayVerifyProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       adminTogglePublishAppRelease,
       adminDeleteAppRelease,
       recordAppReleaseDownload,
+      adminVerifyOrNotePaymentSession,
+      adminDeletePaymentSession,
+      saveMerchantSupportNote,
+      deleteMerchantSupportNote,
+      logAdminReportExport,
+      adminSaveStaffRole,
+      adminDuplicateStaffRole,
+      adminDeleteStaffRole,
+      adminCreateStaffAccount,
+      adminUpdateStaffMember,
+      adminToggleStaffStatus,
+      adminSendStaffPasswordReset,
+      adminRemoveStaffMember,
     ]
   );
 

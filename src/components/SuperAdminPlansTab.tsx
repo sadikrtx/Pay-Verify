@@ -16,6 +16,7 @@ import {
   Save,
   Sparkles,
   Tag,
+  Trash2,
   X,
 } from 'lucide-react';
 import { usePayVerify, type AddonDraftInput, type CouponDraftInput, type PlanDraftInput } from '../lib/store';
@@ -64,13 +65,21 @@ export const SuperAdminPlansTab: React.FC = () => {
     coupons,
     allStores,
     account,
+    canAdmin,
     platformConfig,
     adminSavePlatformSettings,
     adminSavePlan,
     adminArchivePlan,
+    adminDeletePlan,
     adminSaveAddon,
     adminSaveCoupon,
   } = usePayVerify();
+
+  const canViewPlans = canAdmin('plans', 'view');
+  const canCreatePlans = canAdmin('plans', 'create');
+  const canEditPlans = canAdmin('plans', 'edit');
+  const canDeletePlans = canAdmin('plans', 'delete');
+  const isSuperAdmin = Boolean(account?.isSuperAdmin);
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -234,6 +243,16 @@ export const SuperAdminPlansTab: React.FC = () => {
       flashNotice(!plan.archived ? `${plan.name} আর্কাইভ করা হয়েছে।` : `${plan.name} পুনরায় সক্রিয় করা হয়েছে।`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'আর্কাইভ পরিবর্তন ব্যর্থ হয়েছে।');
+    }
+  };
+
+  const handleDeletePlan = async (plan: PayPlanDoc) => {
+    setError(null);
+    try {
+      await adminDeletePlan(plan.id);
+      flashNotice(`"${plan.name}" প্ল্যানটি মুছে ফেলা হয়েছে।`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'প্ল্যান মুছে ফেলা যায়নি।');
     }
   };
 
@@ -409,6 +428,10 @@ export const SuperAdminPlansTab: React.FC = () => {
     }
   };
 
+  if (!canViewPlans) {
+    return null;
+  }
+
   return (
     <div className="space-y-6" data-testid="super-admin-plans-tab">
       {error && (
@@ -425,7 +448,8 @@ export const SuperAdminPlansTab: React.FC = () => {
         </div>
       )}
 
-      {/* Trial Plan & Subscription Store Config */}
+      {/* Trial Plan & Subscription Store Config (Super Admin only) */}
+      {isSuperAdmin && (
       <form
         onSubmit={handleSavePlatformPlanConfig}
         className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-4"
@@ -476,6 +500,7 @@ export const SuperAdminPlansTab: React.FC = () => {
           </button>
         </div>
       </form>
+      )}
 
       {/* Plans Management Section */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
@@ -484,15 +509,17 @@ export const SuperAdminPlansTab: React.FC = () => {
             <Layers className="w-4 h-4 text-teal-700" />
             <h2 className="text-base font-bold text-slate-900">প্ল্যানসমূহ</h2>
           </div>
-          <button
-            type="button"
-            onClick={openNewPlanModal}
-            data-testid="create-plan-btn"
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700"
-          >
-            <Plus className="w-4 h-4" />
-            নতুন প্ল্যান
-          </button>
+          {canCreatePlans && (
+            <button
+              type="button"
+              onClick={openNewPlanModal}
+              data-testid="create-plan-btn"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700"
+            >
+              <Plus className="w-4 h-4" />
+              নতুন প্ল্যান
+            </button>
+          )}
         </div>
 
         <div className="divide-y divide-slate-100">
@@ -556,97 +583,116 @@ export const SuperAdminPlansTab: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-1.5 flex-wrap shrink-0">
-                <button
-                  type="button"
-                  disabled={idx === 0}
-                  onClick={() => void handleReorderPlan(idx, -1)}
-                  title="উপরে নিন"
-                  className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-30"
-                >
-                  <ArrowUp className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  disabled={idx === plans.length - 1}
-                  onClick={() => void handleReorderPlan(idx, 1)}
-                  title="নিচে নিন"
-                  className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-30"
-                >
-                  <ArrowDown className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleQuickToggle(plan, 'visibleOnMarketing')}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  {plan.visibleOnMarketing ? (
-                    <>
-                      <Eye className="w-3.5 h-3.5 text-teal-700" />
-                      দৃশ্যমান
-                    </>
-                  ) : (
-                    <>
-                      <EyeOff className="w-3.5 h-3.5 text-slate-400" />
-                      লুকানো
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleQuickToggle(plan, 'highlight')}
-                  className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-semibold ${
-                    plan.highlight
-                      ? 'bg-teal-50 border-teal-200 text-teal-800'
-                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  জনপ্রিয়
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openEditPlanModal(plan)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  সম্পাদনা
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openDuplicatePlanModal(plan)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  ডুপ্লিকেট
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleToggleArchive(plan)}
-                  className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-semibold ${
-                    plan.archived
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
-                      : 'bg-amber-50 border-amber-200 text-amber-900 hover:bg-amber-100'
-                  }`}
-                >
-                  {plan.archived ? (
-                    <>
-                      <ArchiveRestore className="w-3.5 h-3.5" />
-                      সক্রিয় করুন
-                    </>
-                  ) : (
-                    <>
-                      <Archive className="w-3.5 h-3.5" />
-                      আর্কাইভ
-                    </>
-                  )}
-                </button>
+                {canEditPlans && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={idx === 0}
+                      onClick={() => void handleReorderPlan(idx, -1)}
+                      title="উপরে নিন"
+                      className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-30"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={idx === plans.length - 1}
+                      onClick={() => void handleReorderPlan(idx, 1)}
+                      title="নিচে নিন"
+                      className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-30"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleQuickToggle(plan, 'visibleOnMarketing')}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      {plan.visibleOnMarketing ? (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-teal-700" />
+                          দৃশ্যমান
+                        </>
+                      ) : (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5 text-slate-400" />
+                          লুকানো
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleQuickToggle(plan, 'highlight')}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-semibold ${
+                        plan.highlight
+                          ? 'bg-teal-50 border-teal-200 text-teal-800'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      জনপ্রিয়
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditPlanModal(plan)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      সম্পাদনা
+                    </button>
+                  </>
+                )}
+                {canCreatePlans && (
+                  <button
+                    type="button"
+                    onClick={() => openDuplicatePlanModal(plan)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    ডুপ্লিকেট
+                  </button>
+                )}
+                {canDeletePlans && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleArchive(plan)}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-semibold ${
+                        plan.archived
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
+                          : 'bg-amber-50 border-amber-200 text-amber-900 hover:bg-amber-100'
+                      }`}
+                    >
+                      {plan.archived ? (
+                        <>
+                          <ArchiveRestore className="w-3.5 h-3.5" />
+                          সক্রিয় করুন
+                        </>
+                      ) : (
+                        <>
+                          <Archive className="w-3.5 h-3.5" />
+                          আর্কাইভ
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeletePlan(plan)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      মুছুন
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Add-on Packs Section */}
+      {/* Add-on Packs Section (Super Admin only) */}
+      {isSuperAdmin && (
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -706,8 +752,10 @@ export const SuperAdminPlansTab: React.FC = () => {
           </div>
         )}
       </div>
+      )}
 
-      {/* Coupon Codes Section */}
+      {/* Coupon Codes Section (Super Admin only) */}
+      {isSuperAdmin && (
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -788,6 +836,7 @@ export const SuperAdminPlansTab: React.FC = () => {
           </div>
         )}
       </div>
+      )}
 
       {/* Plan Create / Edit Modal */}
       {planModalOpen && (

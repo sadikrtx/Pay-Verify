@@ -134,15 +134,44 @@ test('firestore.rules restricts simulated SMS and simulated verification strictl
   assert.match(smsBlock, /incoming\(\)\.simulated == true/);
 });
 
-test('firestore.rules secures appReleases: Super Admin CRUD only, public read only for published == true, and atomic +1 downloadCount increment', () => {
-  const releasesBlock = rules.slice(rules.indexOf('match /appReleases/{releaseId}'));
-  assert.match(releasesBlock, /existing\(\)\.published == true \|\|\s*isSuperAdmin\(\)/);
-  assert.match(releasesBlock, /allow list: if resource\.data\.published == true\s*\|\| isSuperAdmin\(\);/);
-  assert.match(releasesBlock, /allow create:[\s\S]*isValidAppRelease\(incoming\(\)\)[\s\S]*isSuperAdmin\(\)/);
+test('firestore.rules secures appReleases: Super Admin or authorized Staff CRUD, public read only for published == true, and atomic +1 downloadCount increment', () => {
+  const releasesBlock = rules.slice(
+    rules.indexOf('match /appReleases/{releaseId}'),
+    rules.indexOf('match /roles/{roleId}')
+  );
+  assert.match(releasesBlock, /existing\(\)\.published == true/);
+  assert.match(releasesBlock, /isSuperAdmin\(\)/);
+  assert.match(releasesBlock, /hasStaffRule\('app_updates'/);
   assert.match(releasesBlock, /incoming\(\)\.downloadCount == existing\(\)\.downloadCount \+ 1/);
   assert.match(releasesBlock, /affectedKeys\(\)\.hasOnly\(\['downloadCount'\]\)/);
-  assert.match(releasesBlock, /allow delete: if isValidId\(releaseId\) && isSuperAdmin\(\);/);
 });
+
+test('firestore.rules enforces Staff & Custom Roles RBAC and Hard Rules', () => {
+  const rolesBlock = rules.slice(
+    rules.indexOf('match /roles/{roleId}'),
+    rules.indexOf('match /staff/{staffUid}')
+  );
+  assert.match(rolesBlock, /allow list: if isSuperAdmin\(\);/);
+  assert.match(rolesBlock, /allow create:[\s\S]*isValidStaffRole\(incoming\(\)\)[\s\S]*isSuperAdmin\(\)/);
+  assert.match(rolesBlock, /allow delete: if isValidId\(roleId\) && isSuperAdmin\(\);/);
+
+  const staffBlock = rules.slice(
+    rules.indexOf('match /staff/{staffUid}'),
+    rules.indexOf('match /merchantSupportNotes/{noteId}')
+  );
+  assert.match(staffBlock, /allow list: if isSuperAdmin\(\);/);
+  assert.match(staffBlock, /allow create:[\s\S]*isValidStaffMember\(incoming\(\)\)[\s\S]*isSuperAdmin\(\)/);
+  assert.match(staffBlock, /allow delete: if isValidId\(staffUid\) && isSuperAdmin\(\);/);
+
+  // Platform config remains strictly Super Admin only (Hard Rule)
+  const platformBlock = rules.slice(
+    rules.indexOf('match /payPlatform/{docId}'),
+    rules.indexOf('match /paySubscriptionPurchases/{purchaseId}')
+  );
+  assert.match(platformBlock, /allow create, update:[\s\S]*isSuperAdmin\(\)/);
+  assert.ok(!platformBlock.includes('hasStaffRule') && !platformBlock.includes('isActiveStaff'));
+});
+
 
 
 
