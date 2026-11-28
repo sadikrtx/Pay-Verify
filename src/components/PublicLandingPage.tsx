@@ -778,7 +778,7 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
       </section>
 
       {/* QUIET FOOTER — Support WhatsApp/Phone ONLY if configured; ZERO login links! */}
-      <footer className="border-t border-[#E8DEC8] bg-[#F7F0DF]/70">
+      <footer className="border-t border-[#E8DEC8] bg-[#F7F0DF]/70 pb-24 lg:pb-0">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-7 flex flex-col sm:flex-row items-center justify-between gap-4">
           <PayVerifyBrandMark
             logoUrl={platformConfig.brandLogoUrl}
@@ -820,7 +820,7 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
           rel="noopener noreferrer"
           aria-label="WhatsApp সাপোর্ট"
           data-testid="floating-whatsapp-btn"
-          className="fixed right-4 bottom-20 lg:bottom-6 z-40 w-13 h-13 rounded-full bg-[#16A34A] hover:bg-[#15803D] text-white shadow-xl flex items-center justify-center transition-transform hover:scale-105"
+          className="fixed right-4 bottom-36 lg:right-6 lg:bottom-22 z-40 w-12 h-12 rounded-full bg-[#16A34A] hover:bg-[#15803D] text-white shadow-xl flex items-center justify-center transition-transform hover:scale-105"
         >
           <MessageCircle className="w-6 h-6" />
         </a>

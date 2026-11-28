@@ -40,8 +40,10 @@ import { ChangelogView } from './components/ChangelogView';
 import { SuperAdminView } from './components/SuperAdminView';
 import { SuperAdminAppUpdatesTab } from './components/SuperAdminAppUpdatesTab';
 import { AppDownloadPage } from './components/AppDownloadPage';
+import { SupportWidgetHost } from './components/SupportWidgetHost';
 import { PayVerifyProvider, usePayVerify } from './lib/store';
 import { isSmsUnmatchedForInbox } from './lib/platformLogic';
+import { resolveSupportWidgetMode } from './lib/supportWidget';
 import type { PayPlanDoc } from './types/payment';
 
 type DashboardTab =
@@ -205,6 +207,71 @@ const DashboardShell: React.FC = () => {
     [smsList]
   );
 
+  const isBlockedAdminScreen = Boolean(
+    user && publicRoute === 'admin' && account && !isAdminPortalUser
+  );
+
+  const widgetMode = resolveSupportWidgetMode({
+    isHostedPaymentPage: false,
+    authReady,
+    isAuthenticated: Boolean(user),
+    publicRoute,
+    isBlockedAdminScreen,
+  });
+
+  const activeDashboardSectionLabel = useMemo(() => {
+    const labels: Record<DashboardTab, string> = {
+      overview: 'ওভারভিউ',
+      sessions: 'লাইভ সেশন',
+      unmatched_sms: 'মেলেনি এমন SMS',
+      sms: 'SMS লগ',
+      payment_page: 'পেমেন্ট পেজ সেটিংস',
+      store_settings: 'স্টোর সেটিংস',
+      my_stores: 'আমার স্টোরসমূহ',
+      device: 'ফোন সংযোগ',
+      download_app: 'অ্যাপ ডাউনলোড',
+      api_docs: 'API ডকুমেন্ট',
+      changelog: 'নতুন কি এসেছে',
+      account: 'অ্যাকাউন্ট',
+      super_admin: 'সুপার অ্যাডমিন',
+      admin_app_updates: 'Android App আপডেট',
+    };
+    return showInAppPlans ? 'প্যাকেজ ও মূল্য' : labels[activeTab] || 'ড্যাশবোর্ড';
+  }, [activeTab, showInAppPlans]);
+
+  const handleWidgetReLogin = useCallback(() => {
+    void signOutUser().finally(() => {
+      navigatePublic('/login', 'login');
+    });
+  }, [signOutUser, navigatePublic]);
+
+  const renderSupportWidget = (hasMobileStickyBar = false) => {
+    if (widgetMode === 'none') return null;
+    return (
+      <SupportWidgetHost
+        mode={widgetMode}
+        plans={plans}
+        platformConfig={platformConfig}
+        hasMobileStickyBar={hasMobileStickyBar}
+        insideContext={
+          widgetMode === 'inside'
+            ? {
+                activeSectionLabel:
+                  currentStaff && !account?.isSuperAdmin
+                    ? 'অ্যাডমিন প্যানেল'
+                    : publicRoute === 'app_download'
+                      ? 'অ্যাপ ডাউনলোড'
+                      : activeDashboardSectionLabel,
+                planName: effectivePlan?.plan.name || undefined,
+                merchantDisplayName: account?.displayName || currentStaff?.name || undefined,
+                onReLogin: handleWidgetReLogin,
+              }
+            : undefined
+        }
+      />
+    );
+  };
+
   if (!authReady) {
     return (
       <div className="min-h-screen bg-[#FFF9EC] flex flex-col items-center justify-center gap-4 p-6">
@@ -217,15 +284,18 @@ const DashboardShell: React.FC = () => {
   // Public Android App Download Page (/app or /download) — accessible to everyone without login
   if (publicRoute === 'app_download') {
     return (
-      <AppDownloadPage
-        onBackToDashboard={
-          user
-            ? () => {
-                navigatePublic('/', 'landing');
-              }
-            : undefined
-        }
-      />
+      <>
+        <AppDownloadPage
+          onBackToDashboard={
+            user
+              ? () => {
+                  navigatePublic('/', 'landing');
+                }
+              : undefined
+          }
+        />
+        {renderSupportWidget(false)}
+      </>
     );
   }
 
@@ -285,21 +355,24 @@ const DashboardShell: React.FC = () => {
 
     if (publicRoute === 'setup_account') {
       return (
-        <FunnelAccountSetupStep
-          platformConfig={platformConfig}
-          plans={plans}
-          verifiedContext={verifiedSetupContext}
-          onCreateFunnelAccount={signUpFunnelAccount}
-          onAccountCreated={({ email }) => {
-            setVerifiedSetupContext(null);
-            setPostSignupLoginState({ email, justCreated: true });
-            navigatePublic('/login', 'login');
-          }}
-          onBackToLanding={() => {
-            setVerifiedSetupContext(null);
-            navigatePublic('/', 'landing');
-          }}
-        />
+        <>
+          <FunnelAccountSetupStep
+            platformConfig={platformConfig}
+            plans={plans}
+            verifiedContext={verifiedSetupContext}
+            onCreateFunnelAccount={signUpFunnelAccount}
+            onAccountCreated={({ email }) => {
+              setVerifiedSetupContext(null);
+              setPostSignupLoginState({ email, justCreated: true });
+              navigatePublic('/login', 'login');
+            }}
+            onBackToLanding={() => {
+              setVerifiedSetupContext(null);
+              navigatePublic('/', 'landing');
+            }}
+          />
+          {renderSupportWidget(false)}
+        </>
       );
     }
 
@@ -328,24 +401,27 @@ const DashboardShell: React.FC = () => {
 
     // STEP 1 (/) & STEP 2 (/pricing or /plans) — ZERO login buttons or login links anywhere!
     return (
-      <PublicLandingPage
-        platformConfig={platformConfig}
-        plans={plans}
-        initialScrollToPricing={publicRoute === 'pricing'}
-        statusBanner={funnelBanner}
-        onDismissBanner={() => setFunnelBanner(null)}
-        onSelectPaidPlan={(plan, billingCycle) => {
-          setFunnelBanner(null);
-          setSelectedCheckoutPlan({ plan, billingCycle });
-          setPublicRoute('checkout');
-          window.scrollTo({ top: 0 });
-        }}
-        onStartTrial={() => {
-          setFunnelBanner(null);
-          setVerifiedSetupContext(null);
-          navigatePublic('/setup-account?trial=1', 'setup_account');
-        }}
-      />
+      <>
+        <PublicLandingPage
+          platformConfig={platformConfig}
+          plans={plans}
+          initialScrollToPricing={publicRoute === 'pricing'}
+          statusBanner={funnelBanner}
+          onDismissBanner={() => setFunnelBanner(null)}
+          onSelectPaidPlan={(plan, billingCycle) => {
+            setFunnelBanner(null);
+            setSelectedCheckoutPlan({ plan, billingCycle });
+            setPublicRoute('checkout');
+            window.scrollTo({ top: 0 });
+          }}
+          onStartTrial={() => {
+            setFunnelBanner(null);
+            setVerifiedSetupContext(null);
+            navigatePublic('/setup-account?trial=1', 'setup_account');
+          }}
+        />
+        {renderSupportWidget(true)}
+      </>
     );
   }
 
@@ -394,25 +470,29 @@ const DashboardShell: React.FC = () => {
             <span className="font-mono hidden sm:inline">{currentStaff.email}</span>
           </div>
         </header>
-        <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 sm:pt-8 pb-24 sm:pb-20">
           <SuperAdminView />
         </main>
+        {renderSupportWidget(false)}
       </div>
     );
   }
 
   if (showInAppPlans) {
     return (
-      <MarketingPlansView
-        onBack={() => setShowInAppPlans(false)}
-        backLabel="অ্যাকাউন্টে ফিরুন"
-        currentPlanId={effectivePlan?.plan.id || null}
-        onSelectPlan={() => {
-          setShowInAppPlans(false);
-          setActiveTab('account');
-        }}
-        actionLabel="এই প্ল্যান নিন"
-      />
+      <>
+        <MarketingPlansView
+          onBack={() => setShowInAppPlans(false)}
+          backLabel="অ্যাকাউন্টে ফিরুন"
+          currentPlanId={effectivePlan?.plan.id || null}
+          onSelectPlan={() => {
+            setShowInAppPlans(false);
+            setActiveTab('account');
+          }}
+          actionLabel="এই প্ল্যান নিন"
+        />
+        {renderSupportWidget(false)}
+      </>
     );
   }
 
@@ -640,7 +720,7 @@ const DashboardShell: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-1 lg:pl-64 min-w-0">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-5">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 sm:pt-8 pb-24 sm:pb-20 space-y-5">
           {/* PART C — মার্চেন্ট ড্যাশবোর্ডে Android App আপডেট নোটিশ */}
           {publishedAppRelease &&
             dismissedAppReleaseCode !== publishedAppRelease.versionCode &&
@@ -864,6 +944,7 @@ const DashboardShell: React.FC = () => {
           )}
         </div>
       </main>
+      {renderSupportWidget(false)}
     </div>
   );
 };

@@ -212,7 +212,7 @@ export const FunnelAccountSetupStep: React.FC<FunnelAccountSetupStepProps> = ({
         </div>
       </header>
 
-      <main className="flex-1 flex items-center justify-center px-4 py-10">
+      <main className="flex-1 flex items-center justify-center px-4 pt-10 pb-24">
         {checkingToken ? (
           <div className="w-full max-w-md bg-white rounded-3xl border border-[#E8DEC8] p-8 text-center space-y-4 shadow-sm">
             <Loader2 className="w-8 h-8 text-[#0F766E] animate-spin mx-auto" />

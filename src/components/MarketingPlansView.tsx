@@ -37,7 +37,7 @@ export const MarketingPlansView: React.FC<MarketingPlansViewProps> = ({
   );
 
   return (
-    <div className="min-h-screen bg-[#F6F8FB] py-8 px-4 sm:px-6 lg:px-8" data-testid="marketing-plans-page">
+    <div className="min-h-screen bg-[#F6F8FB] pt-8 pb-24 px-4 sm:px-6 lg:px-8" data-testid="marketing-plans-page">
       <div className="max-w-6xl mx-auto space-y-8">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">

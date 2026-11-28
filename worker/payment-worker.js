@@ -268,6 +268,75 @@ export function buildWorkerStoreCheckoutPayload(store) {
   return { enabledMethods, methodNumbers };
 }
 
+/**
+ * Part B — Strictly public knowledge payload for PayVerify Support widget.
+ * Exposes ONLY visible non-archived payPlans + sanitized public platform config.
+ * NEVER includes store keys, device keys, webhook secrets, subscriptionStoreId,
+ * merchant accounts, sessions, or SMS records.
+ */
+export function buildWorkerPublicKnowledgePayload(plans, platformConfig) {
+  const safePlans = Array.isArray(plans) ? plans : [];
+  const cfg = platformConfig && typeof platformConfig === 'object' ? platformConfig : {};
+  const trialPlanId = String(cfg.trialPlanId || '').trim();
+  const landing = cfg.landing && typeof cfg.landing === 'object' ? cfg.landing : {};
+
+  const visiblePlans = safePlans
+    .filter((p) => p && Boolean(p.visibleOnMarketing) && !p.archived)
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0))
+    .map((p) => ({
+      id: String(p.id || ''),
+      name: String(p.name || '').trim(),
+      priceMonthly: typeof p.priceMonthly === 'number' && p.priceMonthly > 0 ? p.priceMonthly : null,
+      priceYearly: typeof p.priceYearly === 'number' && p.priceYearly > 0 ? p.priceYearly : null,
+      storeLimit: Math.max(0, Math.trunc(Number(p.storeLimit || 0))),
+      dailySessionCap: Math.max(0, Math.trunc(Number(p.dailySessionCap || 0))),
+      deviceLimit: Math.max(0, Math.trunc(Number(p.deviceLimit || 0))),
+      features: {
+        rotation: Boolean(p.features?.rotation),
+        branding: Boolean(p.features?.branding),
+        embedded: Boolean(p.features?.embedded),
+        apiAccess: Boolean(p.features?.apiAccess),
+        woocommerce: Boolean(p.features?.woocommerce),
+        analytics: Boolean(p.features?.analytics),
+        csvExport: Boolean(p.features?.csvExport),
+        manualMatch: Boolean(p.features?.manualMatch),
+        members: Math.max(0, Math.trunc(Number(p.features?.members || 0))),
+      },
+      customPerks: Array.isArray(p.customPerks)
+        ? p.customPerks.map((item) => String(item || '').trim()).filter(Boolean)
+        : [],
+      highlight: Boolean(p.highlight),
+      isTrialPlan: Boolean(trialPlanId && p.id === trialPlanId),
+    }));
+
+  return {
+    service: 'PayVerify BD',
+    plans: visiblePlans,
+    landing: {
+      heroHeadline: String(landing?.hero?.headline || '').trim(),
+      heroSupportingLine: String(landing?.hero?.supportingLine || '').trim(),
+      howItWorksSteps: Array.isArray(landing?.howItWorksSteps)
+        ? landing.howItWorksSteps.map((s) => String(s || '').trim()).filter(Boolean)
+        : [],
+      benefits: Array.isArray(landing?.benefits)
+        ? landing.benefits.map((b) => String(b?.text || '').trim()).filter(Boolean)
+        : [],
+      faqs: Array.isArray(landing?.faqs)
+        ? landing.faqs
+            .map((f) => ({
+              question: String(f?.question || '').trim(),
+              answer: String(f?.answer || '').trim(),
+            }))
+            .filter((f) => f.question && f.answer)
+        : [],
+    },
+    support: {
+      whatsapp: String(cfg.supportWhatsApp || '').trim(),
+      phone: String(cfg.supportPhone || '').trim(),
+    },
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -289,6 +358,17 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({ ok: true, service: 'payverify-bd-multi-tenant-worker' });
+    }
+
+    // Part B — Public knowledge endpoint (strictly visible payPlans + public config; NEVER keys/secrets/sessions)
+    if (request.method === 'GET' && url.pathname === '/public/knowledge') {
+      return json(
+        {
+          error: 'Configure Firestore Service Account credentials in Worker env to serve live visible payPlans & public config.',
+          contract: buildWorkerPublicKnowledgePayload([], {}),
+        },
+        501
+      );
     }
 
     // Public status endpoint used by /pay/:sessionId (polled every 3s)
