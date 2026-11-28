@@ -27,7 +27,11 @@ export interface SupportWidgetModeInput {
 export interface SupportWidgetEmbedConfig {
   mode: Exclude<SupportWidgetMode, 'none'>;
   scriptUrl: string | null;
+  tenantType: 'knowledge';
+  tenantId: 'payverify-support';
+  widgetToken: string;
   embedToken: string;
+  color: '#0F766E';
   buttonLabel: 'PayVerify সহায়ক' | 'সহায়তা';
   themeColor: '#0F766E' | '#0B3B36';
   knowledgeUrl: string | null;
@@ -48,6 +52,12 @@ export interface InsideTokenEvaluation {
 
 export const SUPPORT_WIDGET_PUBLIC_LABEL = 'PayVerify সহায়ক' as const;
 export const SUPPORT_WIDGET_INSIDE_LABEL = 'সহায়তা' as const;
+
+export const XADIK_WIDGET_SCRIPT_URL = 'https://xadik-ai.web.app/widget.js' as const;
+export const XADIK_WIDGET_TENANT_TYPE = 'knowledge' as const;
+export const XADIK_WIDGET_TENANT_ID = 'payverify-support' as const;
+export const XADIK_WIDGET_TOKEN = 'wgt_kb_payverify_support' as const;
+export const XADIK_WIDGET_COLOR = '#0F766E' as const;
 
 /**
  * Determines whether the PayVerify Support widget may mount on the current screen
@@ -131,15 +141,27 @@ export function buildSupportWidgetEmbedConfig(params: {
   rawEmbedToken?: string | null;
   workerBaseUrl?: string | null;
 }): SupportWidgetEmbedConfig {
-  const scriptUrl = sanitizeWidgetScriptUrl(params.rawScriptUrl);
-  const embedToken = String(params.rawEmbedToken || '').trim().slice(0, 256);
+  const effectiveRawUrl =
+    params.rawScriptUrl === undefined || params.rawScriptUrl === null || params.rawScriptUrl.trim() === ''
+      ? XADIK_WIDGET_SCRIPT_URL
+      : params.rawScriptUrl;
+  const scriptUrl = sanitizeWidgetScriptUrl(effectiveRawUrl);
+  const rawToken =
+    params.rawEmbedToken === undefined || params.rawEmbedToken === null || params.rawEmbedToken.trim() === ''
+      ? XADIK_WIDGET_TOKEN
+      : params.rawEmbedToken;
+  const widgetToken = String(rawToken).trim().slice(0, 256);
   const knowledgeUrl = buildPublicKnowledgeEndpointUrl(params.workerBaseUrl);
 
   if (params.mode === 'inside') {
     return {
       mode: 'inside',
       scriptUrl,
-      embedToken,
+      tenantType: XADIK_WIDGET_TENANT_TYPE,
+      tenantId: XADIK_WIDGET_TENANT_ID,
+      widgetToken,
+      embedToken: widgetToken,
+      color: XADIK_WIDGET_COLOR,
       buttonLabel: SUPPORT_WIDGET_INSIDE_LABEL,
       themeColor: '#0B3B36',
       knowledgeUrl,
@@ -149,7 +171,11 @@ export function buildSupportWidgetEmbedConfig(params: {
   return {
     mode: 'public',
     scriptUrl,
-    embedToken,
+    tenantType: XADIK_WIDGET_TENANT_TYPE,
+    tenantId: XADIK_WIDGET_TENANT_ID,
+    widgetToken,
+    embedToken: widgetToken,
+    color: XADIK_WIDGET_COLOR,
     buttonLabel: SUPPORT_WIDGET_PUBLIC_LABEL,
     themeColor: '#0F766E',
     knowledgeUrl,

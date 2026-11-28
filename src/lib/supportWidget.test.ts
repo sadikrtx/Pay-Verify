@@ -140,25 +140,31 @@ test('sanitizeWidgetScriptUrl allows HTTPS and localhost dev URLs while blocking
   assert.equal(getWidgetScriptOrigin('https://widget.xadik.app/embed/w.js'), 'https://widget.xadik.app');
 });
 
-test('buildSupportWidgetEmbedConfig sets distinct public vs inside labels and never includes merchant secrets', () => {
+test('buildSupportWidgetEmbedConfig defaults to the exact official XADIK PayVerify Support embed code and never includes merchant secrets', () => {
   const pub = buildSupportWidgetEmbedConfig({
     mode: 'public',
-    rawScriptUrl: 'https://widget.xadik.app/embed.js',
-    rawEmbedToken: 'xdk_pub_12345',
     workerBaseUrl: 'https://pay.example.workers.dev/',
   });
   assert.equal(pub.mode, 'public');
+  assert.equal(pub.scriptUrl, 'https://xadik-ai.web.app/widget.js');
+  assert.equal(pub.tenantType, 'knowledge');
+  assert.equal(pub.tenantId, 'payverify-support');
+  assert.equal(pub.widgetToken, 'wgt_kb_payverify_support');
+  assert.equal(pub.color, '#0F766E');
   assert.equal(pub.buttonLabel, SUPPORT_WIDGET_PUBLIC_LABEL);
   assert.equal(pub.knowledgeUrl, 'https://pay.example.workers.dev/public/knowledge');
   assert.equal(buildPublicKnowledgeEndpointUrl('https://pay.example.workers.dev/'), pub.knowledgeUrl);
 
   const inside = buildSupportWidgetEmbedConfig({
     mode: 'inside',
-    rawScriptUrl: 'https://widget.xadik.app/embed.js',
-    rawEmbedToken: 'xdk_pub_12345',
     workerBaseUrl: 'https://pay.example.workers.dev',
   });
   assert.equal(inside.mode, 'inside');
+  assert.equal(inside.scriptUrl, 'https://xadik-ai.web.app/widget.js');
+  assert.equal(inside.tenantType, 'knowledge');
+  assert.equal(inside.tenantId, 'payverify-support');
+  assert.equal(inside.widgetToken, 'wgt_kb_payverify_support');
+  assert.equal(inside.color, '#0F766E');
   assert.equal(inside.buttonLabel, SUPPORT_WIDGET_INSIDE_LABEL);
   assert.notEqual(inside.buttonLabel, pub.buttonLabel);
 

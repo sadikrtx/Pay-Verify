@@ -42,7 +42,11 @@ export interface SupportWidgetHostProps {
 
 export interface PayVerifySupportWidgetBridge {
   mode: 'public' | 'inside';
+  tenantType: 'knowledge';
+  tenantId: 'payverify-support';
+  widgetToken: string;
   embedToken: string;
+  color: '#0F766E';
   buttonLabel: 'PayVerify সহায়ক' | 'সহায়তা';
   themeColor: string;
   knowledgeUrl: string | null;
@@ -236,7 +240,11 @@ export const SupportWidgetHost: React.FC<SupportWidgetHostProps> = ({
 
     const bridge: PayVerifySupportWidgetBridge = {
       mode: embedConfig.mode,
+      tenantType: embedConfig.tenantType,
+      tenantId: embedConfig.tenantId,
+      widgetToken: embedConfig.widgetToken,
       embedToken: embedConfig.embedToken,
+      color: embedConfig.color,
       buttonLabel: embedConfig.buttonLabel,
       themeColor: embedConfig.themeColor,
       knowledgeUrl: embedConfig.knowledgeUrl,
@@ -255,6 +263,10 @@ export const SupportWidgetHost: React.FC<SupportWidgetHostProps> = ({
       new CustomEvent('payverify:widget-context', {
         detail: {
           mode: embedConfig.mode,
+          tenantType: embedConfig.tenantType,
+          tenantId: embedConfig.tenantId,
+          widgetToken: embedConfig.widgetToken,
+          color: embedConfig.color,
           buttonLabel: embedConfig.buttonLabel,
           themeColor: embedConfig.themeColor,
           knowledgeUrl: embedConfig.knowledgeUrl,
@@ -289,15 +301,13 @@ export const SupportWidgetHost: React.FC<SupportWidgetHostProps> = ({
       const script = document.createElement('script');
       script.id = SCRIPT_ELEMENT_ID;
       script.src = embedConfig.scriptUrl;
+      script.setAttribute('data-tenant-type', embedConfig.tenantType);
+      script.setAttribute('data-tenant-id', embedConfig.tenantId);
+      script.setAttribute('data-widget-token', embedConfig.widgetToken);
+      script.setAttribute('data-color', embedConfig.color);
       script.async = true;
-      script.defer = true;
-      script.setAttribute('data-payverify-support-widget', 'true');
       script.setAttribute('data-mode', embedConfig.mode);
       script.setAttribute('data-label', embedConfig.buttonLabel);
-      script.setAttribute('data-theme', embedConfig.themeColor);
-      if (embedConfig.embedToken) {
-        script.setAttribute('data-token', embedConfig.embedToken);
-      }
       if (embedConfig.knowledgeUrl) {
         script.setAttribute('data-knowledge-url', embedConfig.knowledgeUrl);
       }
