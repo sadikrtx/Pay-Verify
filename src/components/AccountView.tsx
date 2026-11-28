@@ -36,6 +36,7 @@ import {
   type WalletMethod,
 } from '../types/payment';
 import { PaymentLogo } from './PaymentLogo';
+import { PayVerifyBrandMark } from './PayVerifyBrandMark';
 
 function todayIsoDate(): string {
   const d = new Date();
@@ -895,7 +896,7 @@ export const AccountView: React.FC<AccountViewProps> = ({ onOpenPlanComparison }
 
             <div className="border border-slate-200 rounded-xl p-4 space-y-2.5 text-xs">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                <span className="font-bold text-sm text-slate-900">PayVerify BD</span>
+                <PayVerifyBrandMark size="footer" />
                 <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold">
                   পরিশোধিত
                 </span>

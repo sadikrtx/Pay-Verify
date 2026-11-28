@@ -1,4 +1,5 @@
 import { isSafeHttpUrl } from './crypto';
+import { formatBanglaTaka } from './checkoutFlow';
 import type { PayPlanDoc, PayPlatformConfig } from '../types/payment';
 
 export interface OfferCountdownParts {
@@ -204,4 +205,82 @@ export function parseSetupAccountQuery(search: string): ParsedSetupParams {
 export function buildLoginBookmarkUrl(origin: string): string {
   const cleanOrigin = origin.trim().replace(/\/+$/, '');
   return `${cleanOrigin}/login`;
+}
+
+export interface FunnelStatusBanner {
+  tone: 'error' | 'info';
+  headline?: string;
+  message: string;
+}
+
+export interface FunnelFailureDetails {
+  expectedAmountPaisa?: number | null;
+  receivedAmountPaisa?: number | null;
+}
+
+const GENERIC_FUNNEL_FAILURE_MESSAGE =
+  'পেমেন্ট যাচাই ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।';
+
+/**
+ * Maps Worker failureReason codes to reason-specific Bangla headline + one-line body
+ * for the subscription funnel payment step. Falls back to the generic failure message
+ * for any missing or unknown reason.
+ */
+export function mapFunnelFailureReasonBn(
+  failureReason?: string | null,
+  details?: FunnelFailureDetails
+): { headline?: string; message: string } {
+  const code = typeof failureReason === 'string' ? failureReason.trim().toLowerCase() : '';
+
+  if (code === 'trxid_used') {
+    return {
+      headline: 'এই TrxID ইতিমধ্যে ব্যবহার হয়েছে',
+      message:
+        'এই TrxID দিয়ে আগেই একটি পেমেন্ট নিশ্চিত হয়েছে। একই TrxID দুইবার ব্যবহার করা যায় না। নতুন পেমেন্ট করলে নতুন TrxID দিন।',
+    };
+  }
+
+  if (code === 'amount_mismatch') {
+    const expectedPaisa = details?.expectedAmountPaisa;
+    const receivedPaisa = details?.receivedAmountPaisa;
+    const hasBothAmounts =
+      typeof expectedPaisa === 'number' &&
+      Number.isFinite(expectedPaisa) &&
+      expectedPaisa > 0 &&
+      typeof receivedPaisa === 'number' &&
+      Number.isFinite(receivedPaisa) &&
+      receivedPaisa > 0;
+    return {
+      headline: 'টাকার পরিমাণ মেলেনি',
+      message: hasBothAmounts
+        ? `প্রত্যাশিত পরিমাণ ছিল ${formatBanglaTaka(expectedPaisa)}, কিন্তু পাওয়া গেছে ${formatBanglaTaka(receivedPaisa)}। সঠিক পরিমাণ পাঠিয়ে আবার চেষ্টা করুন।`
+        : 'আপনার পাঠানো টাকার পরিমাণ নির্ধারিত পরিমাণের সাথে মেলেনি। সঠিক পরিমাণ পাঠিয়ে আবার চেষ্টা করুন।',
+    };
+  }
+
+  if (code === 'no_sms_yet') {
+    return {
+      headline: 'এখনো কোনো ম্যাচিং SMS আসেনি',
+      message:
+        'আপনার TrxID দিয়ে এখনো কোনো মিল পাওয়া যায়নি। পেমেন্টের SMS টি দোকানের ফোনে পৌঁছালে আবার যাচাই করুন।',
+    };
+  }
+
+  if (code === 'sms_too_old') {
+    return {
+      headline: 'এই পেমেন্টটি অনেক পুরোনো',
+      message: 'এই TrxID-এর পেমেন্ট অনেক আগের — এই কেনায় ব্যবহার করা যাবে না।',
+    };
+  }
+
+  if (code === 'expired') {
+    return {
+      headline: 'এই পেমেন্ট সেশনের সময় শেষ',
+      message: 'নতুন করে আবার শুরু করুন।',
+    };
+  }
+
+  return {
+    message: GENERIC_FUNNEL_FAILURE_MESSAGE,
+  };
 }

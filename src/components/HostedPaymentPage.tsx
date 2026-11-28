@@ -12,7 +12,6 @@ import {
   Loader2,
   Lock,
   RefreshCw,
-  ShieldCheck,
   X,
   XCircle,
 } from 'lucide-react';
@@ -49,6 +48,7 @@ import type { WalletMethod, WorkerSessionStatusResponse } from '../types/payment
 
 import { StoreBrandAvatar } from './PaymentMethodMarks';
 import { PaymentLogo } from './PaymentLogo';
+import { PayVerifyBrandMark } from './PayVerifyBrandMark';
 
 export interface PreviewCheckoutConfig {
   storeName: string;
@@ -469,13 +469,16 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
     return (
       <div className="min-h-screen bg-[#F2F5F9] flex flex-col items-center justify-center p-6">
         <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200/80 shadow-sm p-10 text-center space-y-4">
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-slate-100 flex items-center justify-center">
-            <Loader2 className="w-6 h-6 text-slate-700 animate-spin" />
+          <div className="flex justify-center">
+            <PayVerifyBrandMark mode="icon" size="lg" />
           </div>
-          <div className="text-base font-bold text-slate-900">পেমেন্ট পেজ লোড হচ্ছে…</div>
+          <div className="flex items-center justify-center gap-2 text-base font-bold text-slate-900">
+            <Loader2 className="w-4 h-4 text-slate-600 animate-spin" />
+            <span>পেমেন্ট পেজ লোড হচ্ছে…</span>
+          </div>
         </div>
         <footer className="mt-6 flex items-center gap-1.5 text-xs text-slate-400">
-          <ShieldCheck className="w-3.5 h-3.5" />
+          <PayVerifyBrandMark mode="icon" size="xs" />
           <span>Secured by PayVerify</span>
         </footer>
       </div>
@@ -489,6 +492,9 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
         className="min-h-screen bg-[#F2F5F9] flex flex-col items-center justify-center p-4 sm:p-6"
         data-testid="checkout-neutral-error"
       >
+        <div className="mb-5">
+          <PayVerifyBrandMark size="sm" />
+        </div>
         <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-sm p-7 sm:p-8 text-center space-y-5">
           <div className="w-14 h-14 mx-auto rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center">
             <AlertCircle className="w-7 h-7" />
@@ -520,7 +526,7 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
           </div>
         </div>
         <footer className="mt-6 flex items-center gap-1.5 text-xs text-slate-400">
-          <ShieldCheck className="w-3.5 h-3.5" />
+          <PayVerifyBrandMark mode="icon" size="xs" />
           <span>Secured by PayVerify</span>
         </footer>
       </div>
@@ -678,6 +684,11 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
             </div>
           </div>
         )}
+
+        {/* Official Pay Verify Brand Bar */}
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <PayVerifyBrandMark size="sm" />
+        </div>
 
         {/* Main SSLCommerz-style Checkout Shell */}
         <div className="bg-white rounded-3xl border border-slate-200/90 shadow-md shadow-slate-900/5 overflow-hidden">
@@ -1379,7 +1390,7 @@ export const HostedPaymentPage: React.FC<HostedPaymentPageProps> = ({
         {/* Quiet Footer — Merchant Branding Always Dominates */}
         <footer className="mt-6 text-center">
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400">
-            <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
+            <PayVerifyBrandMark mode="icon" size="xs" />
             Secured by PayVerify
           </span>
         </footer>

@@ -64,7 +64,7 @@ export const AppDownloadPage: React.FC<AppDownloadPageProps> = ({ onBackToDashbo
             logoUrl={platformConfig.brandLogoUrl}
             logoDataUrl={platformConfig.brandLogoDataUrl}
             variant="dark"
-            size="sm"
+            size="md"
           />
 
           {user && onBackToDashboard && (

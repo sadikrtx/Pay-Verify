@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Check, Minus, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowLeft, Check, Minus, Sparkles } from 'lucide-react';
+import { PayVerifyBrandMark } from './PayVerifyBrandMark';
 import { usePayVerify } from '../lib/store';
 import {
   PLAN_FEATURE_LABELS_BN,
@@ -50,12 +51,7 @@ export const MarketingPlansView: React.FC<MarketingPlansViewProps> = ({
                 {backLabel}
               </button>
             )}
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shadow-xs">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-              <span className="text-lg font-bold text-slate-900 tracking-tight">PayVerify BD</span>
-            </div>
+            <PayVerifyBrandMark size="md" />
           </div>
 
           {anyYearlyOffered && (

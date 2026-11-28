@@ -29,6 +29,7 @@ import {
   isDirectVideoUrl,
   parseYouTubeVideoId,
   resolveConfiguredTrialPlan,
+  type FunnelStatusBanner,
 } from '../lib/funnelLogic';
 import {
   formatLimitBn,
@@ -49,7 +50,7 @@ interface PublicLandingPageProps {
   onSelectPaidPlan: (plan: PayPlanDoc, billingCycle: 'monthly' | 'yearly') => void;
   onStartTrial: (trialPlan: PayPlanDoc) => void;
   initialScrollToPricing?: boolean;
-  statusBanner?: { tone: 'error' | 'info'; message: string } | null;
+  statusBanner?: FunnelStatusBanner | null;
   onDismissBanner?: () => void;
   /** Used inside Super Admin live preview to force desktop or mobile layout without touching real navigation */
   previewMode?: 'desktop' | 'mobile' | null;
@@ -374,7 +375,19 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
             }`}
             data-testid="funnel-status-banner"
           >
-            <span>{statusBanner.message}</span>
+            <div className="space-y-0.5">
+              {statusBanner.headline && (
+                <div className="font-bold text-sm sm:text-base" data-testid="funnel-status-banner-headline">
+                  {statusBanner.headline}
+                </div>
+              )}
+              <div
+                className={statusBanner.headline ? 'text-xs sm:text-sm font-medium opacity-90' : ''}
+                data-testid="funnel-status-banner-body"
+              >
+                {statusBanner.message}
+              </div>
+            </div>
             {onDismissBanner && (
               <button
                 type="button"
@@ -771,7 +784,7 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
             logoUrl={platformConfig.brandLogoUrl}
             logoDataUrl={platformConfig.brandLogoDataUrl}
             variant="dark"
-            size="sm"
+            size="footer"
           />
 
           <div className="flex flex-wrap items-center justify-center gap-4 text-sm font-semibold text-[#2A423F]">

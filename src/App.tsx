@@ -141,6 +141,7 @@ const DashboardShell: React.FC = () => {
   }>({ email: '', justCreated: false });
   const [funnelBanner, setFunnelBanner] = useState<{
     tone: 'error' | 'info';
+    headline?: string;
     message: string;
   } | null>(null);
 
@@ -206,8 +207,9 @@ const DashboardShell: React.FC = () => {
 
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-[#FFF9EC] flex items-center justify-center p-6">
-        <div className="w-9 h-9 rounded-full border-3 border-[#0F766E] border-t-transparent animate-spin" />
+      <div className="min-h-screen bg-[#FFF9EC] flex flex-col items-center justify-center gap-4 p-6">
+        <PayVerifyBrandMark mode="icon" size="lg" />
+        <div className="w-7 h-7 rounded-full border-3 border-[#0F766E] border-t-transparent animate-spin" />
       </div>
     );
   }
@@ -264,6 +266,19 @@ const DashboardShell: React.FC = () => {
           justCreatedAccount={postSignupLoginState.justCreated}
           onEmailSignIn={(email, password, portal) => signInWithEmail(email, password, portal)}
           onGoogleSignIn={(portal) => signInWithGoogle(portal)}
+          onRecoveredPurchase={(recovered) => {
+            setPostSignupLoginState({ email: '', justCreated: false });
+            setVerifiedSetupContext({
+              purchaseId: recovered.purchaseId,
+              claimToken: recovered.claimToken,
+              planName: recovered.planName,
+              buyerName: '',
+            });
+            navigatePublic(
+              `/setup-account?purchase=${encodeURIComponent(recovered.purchaseId)}&token=${encodeURIComponent(recovered.claimToken)}`,
+              'setup_account'
+            );
+          }}
         />
       );
     }
@@ -373,7 +388,7 @@ const DashboardShell: React.FC = () => {
             logoUrl={platformConfig.brandLogoUrl}
             logoDataUrl={platformConfig.brandLogoDataUrl}
             variant="dark"
-            size="sm"
+            size="md"
           />
           <div className="flex items-center gap-2 text-xs text-slate-600">
             <span className="font-mono hidden sm:inline">{currentStaff.email}</span>
@@ -452,7 +467,7 @@ const DashboardShell: React.FC = () => {
               logoUrl={platformConfig.brandLogoUrl}
               logoDataUrl={platformConfig.brandLogoDataUrl}
               variant="dark"
-              size="sm"
+              size="md"
             />
           </div>
         </div>

@@ -337,11 +337,13 @@ export async function submitSessionVerification(
         supported: true,
         status: 'failed',
         failureReason:
-          typeof body.reason === 'string'
-            ? body.reason
-            : typeof body.error === 'string'
-              ? body.error
-              : 'verification_failed',
+          typeof body.failureReason === 'string' && body.failureReason.trim()
+            ? body.failureReason.trim()
+            : typeof body.reason === 'string' && body.reason.trim()
+              ? body.reason.trim()
+              : typeof body.error === 'string' && body.error.trim()
+                ? body.error.trim()
+                : 'verification_failed',
       };
     }
 
@@ -350,7 +352,10 @@ export async function submitSessionVerification(
       supported: true,
       status: statusStr,
       trxId: body.trxId ? String(body.trxId) : payload.trxId,
-      failureReason: typeof body.failureReason === 'string' ? body.failureReason : null,
+      failureReason:
+        typeof body.failureReason === 'string' && body.failureReason.trim()
+          ? body.failureReason.trim()
+          : null,
     };
   } catch {
     return { supported: false };
@@ -718,6 +723,18 @@ export interface PublicSubscriptionStatusResponse {
   planId: string | null;
   planName: string | null;
   failureReason: string | null;
+  expectedAmountPaisa?: number | null;
+  receivedAmountPaisa?: number | null;
+}
+
+function parseOptionalAmountPaisa(paisaVal: unknown, bdtVal?: unknown): number | null {
+  if (typeof paisaVal === 'number' && Number.isFinite(paisaVal) && paisaVal > 0) {
+    return Math.trunc(paisaVal);
+  }
+  if (typeof bdtVal === 'number' && Number.isFinite(bdtVal) && bdtVal > 0) {
+    return Math.round(bdtVal * 100);
+  }
+  return null;
 }
 
 /**
@@ -763,7 +780,18 @@ export async function fetchPublicSubscriptionStatus(
         : null,
     planId: typeof body.planId === 'string' ? body.planId : null,
     planName: typeof body.planName === 'string' ? body.planName : null,
-    failureReason: typeof body.failureReason === 'string' ? body.failureReason : null,
+    failureReason:
+      typeof body.failureReason === 'string' && body.failureReason.trim()
+        ? body.failureReason.trim()
+        : null,
+    expectedAmountPaisa: parseOptionalAmountPaisa(
+      body.expectedAmountPaisa ?? body.expectedPaisa,
+      body.expectedAmount
+    ),
+    receivedAmountPaisa: parseOptionalAmountPaisa(
+      body.receivedAmountPaisa ?? body.receivedPaisa,
+      body.receivedAmount
+    ),
   };
 }
 
@@ -864,5 +892,81 @@ export async function redeemSubscriptionClaimToken(
   return {
     planName: typeof body.planName === 'string' ? body.planName : 'প্যাকেজ',
   };
+}
+
+export type RecoverPurchaseResult =
+  | {
+      ok: true;
+      purchaseId: string;
+      claimToken: string;
+      planName: string;
+    }
+  | {
+      ok: false;
+      error: 'not_found';
+    };
+
+function normalizeRecoveryPhone(rawPhone: string): string {
+  const ascii = rawPhone.replace(/[০-৯]/g, (ch) => String('০১২৩৪৫৬৭৮৯'.indexOf(ch)));
+  let digits = ascii.replace(/[^0-9]/g, '');
+  if (digits.length === 13 && digits.startsWith('8801')) {
+    digits = digits.slice(2);
+  }
+  return digits;
+}
+
+/**
+ * Abandoned Paid Purchase Recovery: POST {workerBaseUrl}/subscription/recover
+ * Matches ONLY a PAID, UNCLAIMED purchase within its 7-day claim window where
+ * checkout phone + payment TrxID match. Rotates and returns a fresh single-use claimToken.
+ * Always collapses any failure into { ok: false, error: 'not_found' } so callers never
+ * leak which field failed or whether a purchase was already claimed.
+ */
+export async function recoverSubscriptionPurchase(
+  workerBaseUrl: string,
+  payload: {
+    phone: string;
+    trxId: string;
+  },
+  fetchImpl: typeof fetch = fetch
+): Promise<RecoverPurchaseResult> {
+  const base = normalizeWorkerBaseUrl(workerBaseUrl);
+  const phone = normalizeRecoveryPhone(payload.phone || '');
+  const trxId = String(payload.trxId || '').trim().toUpperCase();
+  if (!base || !phone || !trxId) {
+    return { ok: false, error: 'not_found' };
+  }
+
+  try {
+    const res = await fetchImpl(`${base}/subscription/recover`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ phone, trxId }),
+    });
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (
+      !res.ok ||
+      body.ok !== true ||
+      typeof body.purchaseId !== 'string' ||
+      !body.purchaseId.trim() ||
+      typeof body.claimToken !== 'string' ||
+      !body.claimToken.trim()
+    ) {
+      return { ok: false, error: 'not_found' };
+    }
+
+    return {
+      ok: true,
+      purchaseId: body.purchaseId.trim(),
+      claimToken: body.claimToken.trim(),
+      planName: typeof body.planName === 'string' ? body.planName.trim() : '',
+    };
+  } catch {
+    return { ok: false, error: 'not_found' };
+  }
 }
 

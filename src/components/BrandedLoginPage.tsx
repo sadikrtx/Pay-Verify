@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  ArrowLeft,
   Bookmark,
   Check,
   CheckCircle2,
@@ -10,10 +11,17 @@ import {
   Loader2,
   Lock,
   Mail,
+  Phone,
+  Receipt,
   Shield,
+  X,
 } from 'lucide-react';
 import { PayVerifyBrandMark } from './PayVerifyBrandMark';
 import { buildLoginBookmarkUrl } from '../lib/funnelLogic';
+import {
+  recoverSubscriptionPurchase,
+  resolvePublicWorkerBaseUrl,
+} from '../lib/workerClient';
 import type { PayPlatformConfig } from '../types/payment';
 
 interface BrandedLoginPageProps {
@@ -23,7 +31,15 @@ interface BrandedLoginPageProps {
   justCreatedAccount?: boolean;
   onEmailSignIn: (email: string, password: string, portal: 'buyer' | 'admin') => Promise<void>;
   onGoogleSignIn: (portal: 'buyer' | 'admin') => Promise<void>;
+  onRecoveredPurchase?: (recovered: {
+    purchaseId: string;
+    claimToken: string;
+    planName: string;
+  }) => void;
 }
+
+const GENERIC_RECOVERY_ERROR_BN =
+  'কোনো অসম্পূর্ণ কেনা পাওয়া যায়নি। নম্বর ও TrxID আবার দেখে চেষ্টা করুন।';
 
 function mapLoginErrorBn(err: unknown): string {
   if (err instanceof Error && err.message === 'এই পোর্টালটি শুধু অ্যাডমিনের জন্য') {
@@ -59,6 +75,7 @@ export const BrandedLoginPage: React.FC<BrandedLoginPageProps> = ({
   justCreatedAccount = false,
   onEmailSignIn,
   onGoogleSignIn,
+  onRecoveredPurchase,
 }) => {
   const isAdminPortal = portal === 'admin';
   const [email, setEmail] = useState(prefilledEmail);
@@ -67,6 +84,30 @@ export const BrandedLoginPage: React.FC<BrandedLoginPageProps> = ({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
+
+  // Abandoned paid-purchase recovery state (buyer /login ONLY)
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryPhone, setRecoveryPhone] = useState('');
+  const [recoveryTrxId, setRecoveryTrxId] = useState('');
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (prefilledEmail) {
+      setEmail(prefilledEmail);
+    }
+  }, [prefilledEmail]);
+
+  useEffect(() => {
+    if (!recoveryOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !recoveryBusy) {
+        setRecoveryOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [recoveryOpen, recoveryBusy]);
 
   const loginBookmarkUrl = useMemo(() => {
     const origin = typeof window !== 'undefined' ? window.location.origin : 'https://payverify.app';
@@ -113,6 +154,54 @@ export const BrandedLoginPage: React.FC<BrandedLoginPageProps> = ({
       setError(mapLoginErrorBn(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const openRecovery = () => {
+    setRecoveryError(null);
+    setRecoveryOpen(true);
+  };
+
+  const closeRecovery = () => {
+    if (recoveryBusy) return;
+    setRecoveryOpen(false);
+    setRecoveryError(null);
+  };
+
+  const handleRecoverySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoveryError(null);
+
+    const phone = recoveryPhone.trim();
+    const trxId = recoveryTrxId.trim();
+    if (!phone || !trxId) {
+      setRecoveryError(GENERIC_RECOVERY_ERROR_BN);
+      return;
+    }
+
+    const workerBase = (platformConfig.workerBaseUrl || '').trim() || resolvePublicWorkerBaseUrl();
+    if (!workerBase || !onRecoveredPurchase) {
+      setRecoveryError(GENERIC_RECOVERY_ERROR_BN);
+      return;
+    }
+
+    setRecoveryBusy(true);
+    try {
+      const res = await recoverSubscriptionPurchase(workerBase, { phone, trxId });
+      if (!res.ok) {
+        setRecoveryError(GENERIC_RECOVERY_ERROR_BN);
+        return;
+      }
+      setRecoveryOpen(false);
+      onRecoveredPurchase({
+        purchaseId: res.purchaseId,
+        claimToken: res.claimToken,
+        planName: res.planName,
+      });
+    } catch {
+      setRecoveryError(GENERIC_RECOVERY_ERROR_BN);
+    } finally {
+      setRecoveryBusy(false);
     }
   };
 
@@ -300,7 +389,164 @@ export const BrandedLoginPage: React.FC<BrandedLoginPageProps> = ({
             Google দিয়ে লগইন করুন
           </button>
         </div>
+
+        {/* Abandoned Paid Purchase Recovery Entry Point — /login (buyer portal) ONLY */}
+        {!isAdminPortal && onRecoveredPurchase && (
+          <div
+            className="bg-white/90 rounded-2xl border border-[#E8DEC8] px-5 py-4 text-center shadow-xs"
+            data-testid="purchase-recovery-entry"
+          >
+            <button
+              type="button"
+              onClick={openRecovery}
+              data-testid="open-purchase-recovery-btn"
+              className="text-sm font-bold text-[#0F766E] hover:text-[#0B3B36] underline underline-offset-4 transition-colors"
+            >
+              পেমেন্ট করেছেন কিন্তু পাসওয়ার্ড সেট করেননি?
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Recovery Form: clean dedicated page on mobile (<sm), clean centered popup modal on desktop (sm+) */}
+      {!isAdminPortal && onRecoveredPurchase && recoveryOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-[#FFF9EC] sm:bg-slate-900/45 sm:backdrop-blur-[1px] overflow-y-auto flex flex-col sm:items-center sm:justify-center sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="purchase-recovery-heading"
+          data-testid="purchase-recovery-dialog"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeRecovery();
+          }}
+        >
+          {/* Mobile top header bar */}
+          <div className="sm:hidden bg-[#FFF9EC] border-b border-[#E8DEC8] px-4 h-16 flex items-center justify-between shrink-0">
+            <button
+              type="button"
+              onClick={closeRecovery}
+              disabled={recoveryBusy}
+              className="min-h-[44px] px-2 -ml-2 rounded-xl text-sm font-bold text-[#0B3B36] inline-flex items-center gap-1.5"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              লগইনে ফিরুন
+            </button>
+            <PayVerifyBrandMark
+              logoUrl={platformConfig.brandLogoUrl}
+              logoDataUrl={platformConfig.brandLogoDataUrl}
+              variant="dark"
+              size="sm"
+            />
+          </div>
+
+          <div className="w-full max-w-md mx-auto px-4 py-8 sm:p-0">
+            <div className="bg-white rounded-3xl border border-[#E8DEC8] shadow-sm sm:shadow-xl p-6 sm:p-7 space-y-5">
+              <div className="flex items-start justify-between gap-3">
+                <h2
+                  id="purchase-recovery-heading"
+                  className="text-lg sm:text-xl font-bold text-[#0B3B36] leading-snug"
+                >
+                  পেমেন্ট করেছেন কিন্তু পাসওয়ার্ড সেট করেননি?
+                </h2>
+                <button
+                  type="button"
+                  onClick={closeRecovery}
+                  disabled={recoveryBusy}
+                  aria-label="বন্ধ করুন"
+                  data-testid="close-purchase-recovery-btn"
+                  className="hidden sm:inline-flex p-2 -mr-2 -mt-1 rounded-xl text-[#4F6360] hover:bg-slate-100 transition-colors shrink-0"
+                >
+                  <X className="w-4.5 h-4.5" />
+                </button>
+              </div>
+
+              {recoveryError && (
+                <div
+                  className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-sm font-semibold flex items-start gap-2.5"
+                  data-testid="purchase-recovery-error"
+                >
+                  <AlertCircle className="w-4.5 h-4.5 shrink-0 mt-0.5" />
+                  <span>{recoveryError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleRecoverySubmit} className="space-y-4" noValidate>
+                <div>
+                  <label
+                    htmlFor="recovery-phone"
+                    className="block text-sm font-bold text-[#0B3B36] mb-1.5"
+                  >
+                    মোবাইল নম্বর
+                  </label>
+                  <div className="relative">
+                    <Phone className="w-4.5 h-4.5 text-[#556B68] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      id="recovery-phone"
+                      type="tel"
+                      required
+                      autoComplete="tel"
+                      maxLength={20}
+                      value={recoveryPhone}
+                      onChange={(e) => setRecoveryPhone(e.target.value)}
+                      placeholder="017XXXXXXXX"
+                      data-testid="recovery-phone-input"
+                      className="w-full min-h-[48px] pl-11 pr-4 py-3 rounded-xl border border-[#DDD2BC] bg-white text-base font-mono text-[#142523] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="recovery-trxid"
+                    className="block text-sm font-bold text-[#0B3B36] mb-1.5"
+                  >
+                    TrxID
+                  </label>
+                  <div className="relative">
+                    <Receipt className="w-4.5 h-4.5 text-[#556B68] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      id="recovery-trxid"
+                      type="text"
+                      required
+                      autoCapitalize="characters"
+                      autoComplete="off"
+                      maxLength={40}
+                      value={recoveryTrxId}
+                      onChange={(e) => setRecoveryTrxId(e.target.value)}
+                      placeholder="যেমন: BKA89M4K2P"
+                      data-testid="recovery-trxid-input"
+                      className="w-full min-h-[48px] pl-11 pr-4 py-3 rounded-xl border border-[#DDD2BC] bg-white text-base font-mono uppercase text-[#142523] focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={recoveryBusy}
+                  data-testid="recovery-submit-btn"
+                  className="w-full min-h-[50px] px-6 py-3.5 rounded-2xl bg-[#0F766E] hover:bg-[#0B3B36] text-white font-bold text-base shadow-sm disabled:opacity-60 inline-flex items-center justify-center gap-2 transition-colors"
+                >
+                  {recoveryBusy ? (
+                    <>
+                      <Loader2 className="w-4.5 h-4.5 animate-spin" />
+                      খোঁজা হচ্ছে...
+                    </>
+                  ) : (
+                    'কেনা খুঁজুন'
+                  )}
+                </button>
+              </form>
+
+              <p
+                className="text-xs text-[#556B68] text-center font-medium"
+                data-testid="purchase-recovery-hint"
+              >
+                পেমেন্টের ৭ দিনের মধ্যে এই সুবিধা পাওয়া যাবে।
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

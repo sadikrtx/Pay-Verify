@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { PayVerifyBrandMark } from './PayVerifyBrandMark';
 
 interface SignInGateProps {
   onGoogleSignIn: () => Promise<void>;
@@ -54,12 +54,7 @@ export const SignInGate: React.FC<SignInGateProps> = ({
     <div className="min-h-screen bg-[#F6F8FB] flex items-center justify-center p-5">
       <div className="max-w-md w-full bg-white border border-slate-200 rounded-2xl p-7 sm:p-8 space-y-6">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center text-[#0F766E]">
-              <ShieldCheck className="w-5 h-5" aria-hidden="true" />
-            </div>
-            <span className="text-lg font-bold text-slate-900 tracking-tight">PayVerify BD</span>
-          </div>
+          <PayVerifyBrandMark size="md" />
           {onViewPlans && (
             <button
               type="button"

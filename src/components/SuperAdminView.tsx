@@ -18,7 +18,6 @@ import {
   MessageSquarePlus,
   Receipt,
   Save,
-  Shield,
   ShieldAlert,
   Smartphone,
   Sparkles,
@@ -55,6 +54,7 @@ import { SuperAdminChangelogTab } from './SuperAdminChangelogTab';
 import { SuperAdminLandingTab } from './SuperAdminLandingTab';
 import { SuperAdminAppUpdatesTab } from './SuperAdminAppUpdatesTab';
 import { SuperAdminStaffTab } from './SuperAdminStaffTab';
+import { PayVerifyBrandMark } from './PayVerifyBrandMark';
 import {
   CHECKOUT_METHOD_BRANDS,
   CHECKOUT_METHODS,
@@ -749,9 +749,7 @@ export const SuperAdminView: React.FC = () => {
       {/* Top Admin Header — Shows Staff Member's Own Name & Role (Part F.4) */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-4 sm:p-5 shadow-xs flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0">
-            <Shield className="w-5 h-5" />
-          </span>
+          <PayVerifyBrandMark mode="icon" size="sm" />
           <div>
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">
               {isSuperAdmin ? 'সুপার অ্যাডমিন' : 'অ্যাডমিন প্যানেল'}

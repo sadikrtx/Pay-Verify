@@ -12,7 +12,11 @@ import {
 import { PaymentLogo } from './PaymentLogo';
 import { PayVerifyBrandMark } from './PayVerifyBrandMark';
 import { HostedPaymentPage } from './HostedPaymentPage';
-import { validateFunnelBuyerContact } from '../lib/funnelLogic';
+import {
+  mapFunnelFailureReasonBn,
+  validateFunnelBuyerContact,
+  type FunnelStatusBanner,
+} from '../lib/funnelLogic';
 import { formatPlanPriceBn } from '../lib/planEngine';
 import {
   createPublicSubscriptionCheckout,
@@ -31,7 +35,7 @@ interface FunnelCheckoutStepProps {
   plan: PayPlanDoc;
   initialBillingCycle: 'monthly' | 'yearly';
   platformConfig: PayPlatformConfig;
-  onBackToPlans: (banner?: { tone: 'error' | 'info'; message: string }) => void;
+  onBackToPlans: (banner?: FunnelStatusBanner) => void;
   onPaymentVerified: (result: {
     purchaseId: string;
     claimToken: string;
@@ -99,7 +103,7 @@ export const FunnelCheckoutStep: React.FC<FunnelCheckoutStepProps> = ({
         if (res.status === 'expired') {
           onBackToPlans({
             tone: 'error',
-            message: 'পেমেন্ট সেশনের সময় শেষ হয়ে গেছে। আবার চেষ্টা করতে প্যাকেজটি বেছে নিন।',
+            ...mapFunnelFailureReasonBn('expired'),
           });
           return;
         }
@@ -113,7 +117,10 @@ export const FunnelCheckoutStep: React.FC<FunnelCheckoutStepProps> = ({
         if (res.status === 'failed') {
           onBackToPlans({
             tone: 'error',
-            message: 'পেমেন্ট যাচাই সফল হয়নি। অনুগ্রহ করে আবার চেষ্টা করুন।',
+            ...mapFunnelFailureReasonBn(res.failureReason, {
+              expectedAmountPaisa: res.expectedAmountPaisa,
+              receivedAmountPaisa: res.receivedAmountPaisa,
+            }),
           });
         }
       } catch {
@@ -211,7 +218,7 @@ export const FunnelCheckoutStep: React.FC<FunnelCheckoutStepProps> = ({
           sessionId={activeCheckout.sessionId}
           workerBaseUrlOverride={platformConfig.workerBaseUrl}
           embedded
-          onTerminalStatus={(status) => {
+          onTerminalStatus={(status, info) => {
             if (status === 'cancelled') {
               onBackToPlans({
                 tone: 'info',
@@ -220,12 +227,12 @@ export const FunnelCheckoutStep: React.FC<FunnelCheckoutStepProps> = ({
             } else if (status === 'expired') {
               onBackToPlans({
                 tone: 'error',
-                message: 'পেমেন্ট সেশনের সময় শেষ হয়ে গেছে। আবার চেষ্টা করুন।',
+                ...mapFunnelFailureReasonBn('expired'),
               });
             } else if (status === 'failed') {
               onBackToPlans({
                 tone: 'error',
-                message: 'পেমেন্ট যাচাই ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।',
+                ...mapFunnelFailureReasonBn(info?.failureReason),
               });
             }
             // Note: on 'paid', we deliberately wait for Worker's /subscription/purchase/:id/status

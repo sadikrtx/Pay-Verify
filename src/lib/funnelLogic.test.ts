@@ -7,6 +7,7 @@ import {
   buildYouTubeEmbedUrl,
   computeRealOfferCountdown,
   isDirectVideoUrl,
+  mapFunnelFailureReasonBn,
   parseSetupAccountQuery,
   parseYouTubeVideoId,
   resolveConfiguredTrialPlan,
@@ -153,4 +154,54 @@ test('normalizeLandingConfig preserves exact Step 1 defaults and strips unsafe U
   assert.equal(sanitized.hero.headline, 'কাস্টম শিরোনাম');
   assert.equal(sanitized.hero.imageUrl, '');
   assert.equal(sanitized.hero.videoUrl, '');
+});
+
+test('mapFunnelFailureReasonBn maps all 5 Worker failureReason codes and falls back cleanly', () => {
+  const used = mapFunnelFailureReasonBn('trxid_used');
+  assert.equal(used.headline, 'এই TrxID ইতিমধ্যে ব্যবহার হয়েছে');
+  assert.equal(
+    used.message,
+    'এই TrxID দিয়ে আগেই একটি পেমেন্ট নিশ্চিত হয়েছে। একই TrxID দুইবার ব্যবহার করা যায় না। নতুন পেমেন্ট করলে নতুন TrxID দিন।'
+  );
+
+  const mismatchNoAmt = mapFunnelFailureReasonBn('amount_mismatch');
+  assert.equal(mismatchNoAmt.headline, 'টাকার পরিমাণ মেলেনি');
+  assert.equal(
+    mismatchNoAmt.message,
+    'আপনার পাঠানো টাকার পরিমাণ নির্ধারিত পরিমাণের সাথে মেলেনি। সঠিক পরিমাণ পাঠিয়ে আবার চেষ্টা করুন।'
+  );
+
+  const mismatchWithAmt = mapFunnelFailureReasonBn('amount_mismatch', {
+    expectedAmountPaisa: 99_900,
+    receivedAmountPaisa: 50_000,
+  });
+  assert.equal(mismatchWithAmt.headline, 'টাকার পরিমাণ মেলেনি');
+  assert.match(mismatchWithAmt.message, /৳৯৯৯/);
+  assert.match(mismatchWithAmt.message, /৳৫০০/);
+
+  const noSms = mapFunnelFailureReasonBn('no_sms_yet');
+  assert.equal(noSms.headline, 'এখনো কোনো ম্যাচিং SMS আসেনি');
+  assert.equal(
+    noSms.message,
+    'আপনার TrxID দিয়ে এখনো কোনো মিল পাওয়া যায়নি। পেমেন্টের SMS টি দোকানের ফোনে পৌঁছালে আবার যাচাই করুন।'
+  );
+
+  const oldSms = mapFunnelFailureReasonBn('sms_too_old');
+  assert.equal(oldSms.headline, 'এই পেমেন্টটি অনেক পুরোনো');
+  assert.equal(
+    oldSms.message,
+    'এই TrxID-এর পেমেন্ট অনেক আগের — এই কেনায় ব্যবহার করা যাবে না।'
+  );
+
+  const expired = mapFunnelFailureReasonBn('expired');
+  assert.equal(expired.headline, 'এই পেমেন্ট সেশনের সময় শেষ');
+  assert.equal(expired.message, 'নতুন করে আবার শুরু করুন।');
+
+  const fallbackNull = mapFunnelFailureReasonBn(null);
+  assert.equal(fallbackNull.headline, undefined);
+  assert.equal(fallbackNull.message, 'পেমেন্ট যাচাই ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
+
+  const fallbackUnknown = mapFunnelFailureReasonBn('some_other_error');
+  assert.equal(fallbackUnknown.headline, undefined);
+  assert.equal(fallbackUnknown.message, 'পেমেন্ট যাচাই ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
 });
